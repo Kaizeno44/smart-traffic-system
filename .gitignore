@@ -22,6 +22,7 @@ env/
 /services/ai-service/data/
 
 # OS/IDE
+dist/
 .DS_Store
 .idea/
 .vscode/

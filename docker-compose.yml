@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: smart_traffic_db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: adminpassword
+      POSTGRES_DB: smart_traffic
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infrastructure/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: always
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: smart_traffic_rmq
+    ports:
+      - "5672:5672"   # Port chính để ứng dụng Node.js kết nối
+      - "15672:15672" # Port dành cho giao diện web quản lý Dashboard của RabbitMQ
+    restart: always
