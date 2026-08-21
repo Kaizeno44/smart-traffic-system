@@ -25,3 +25,8 @@ env/
 .DS_Store
 .idea/
 .vscode/
+
+*.h5
+*.pt
+*.zip
+output_violations/
