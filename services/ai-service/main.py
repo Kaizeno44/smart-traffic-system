@@ -14,6 +14,32 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output_violations")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+def compute_iou(boxA, boxB):
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    return interArea / float(boxAArea + boxBArea - interArea + 1e-5)
+
+def is_white_helmet(crop):
+    """Kiểm tra xem bounding box có chứa tỷ lệ pixel màu trắng/sáng lớn không (đặc trưng của mũ bảo hiểm màu trắng)"""
+    if crop is None or crop.size == 0:
+        return False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    v_channel = hsv[:, :, 2] # Độ sáng
+    s_channel = hsv[:, :, 1] # Độ bão hòa màu
+    
+    # Đếm số lượng pixel màu trắng/xám sáng (V > 135 và S < 90)
+    white_pixels = np.sum((v_channel > 135) & (s_channel < 90))
+    total_pixels = crop.shape[0] * crop.shape[1]
+    white_ratio = white_pixels / float(total_pixels + 1e-5)
+    
+    # Nếu vùng được chọn có trên 18% diện tích là màu trắng/sáng -> Là mũ bảo hiểm trắng
+    return white_ratio > 0.18
+
 def run_traffic_system(video_path):
     
     # --------------------------------------------------------------------------
@@ -84,12 +110,17 @@ def run_traffic_system(video_path):
         cv2.putText(annotated_frame, "Vach Kiem Tra Vi Pham", (20, threshold_y - 15), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
-        # 2. Nhận diện MŨ BẢO HIỂM & BIỂN SỐ (conf=0.45, imgsz=1280)
-        helmet_detections = analyze_frame(helmet_model, frame, conf=0.45, imgsz=1280)
+        # 2. Nhận diện MŨ BẢO HIỂM & BIỂN SỐ
+        helmet_detections = analyze_frame(helmet_model, frame, conf=0.35, imgsz=1280)
         lp_detections = analyze_frame(lp_model, frame, conf=0.45, imgsz=640) # Model mới train chỉ cần imgsz=640
         helmet_dets = []
         no_helmet_dets = []
         lp_dets = []
+
+        # Ngưỡng Confidence riêng cho lỗi KHÔNG ĐỘI MŨ BẢO HIỂM (nâng lên 0.72 để triệt tiêu các dự đoán nghi ngờ ~0.69)
+        NO_HELMET_CONF_THRESH = 0.72
+
+        raw_no_helmet_dets = []
 
         for det in helmet_detections:
             cls_name = det["class_lower"]
@@ -103,20 +134,44 @@ def run_traffic_system(video_path):
                 cv2.putText(annotated_frame, f"Helmet ({conf:.2f})", (x1, max(30, y1 - 10)), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             elif cls_name in ["no helmet", "no_helmet", "without_helmet", "without-helmet", "no-helmet"]:
-                # Lọc bỏ các bounding box không hợp lệ
-                h_w = x2 - x1
-                h_h = y2 - y1
-                aspect = h_h / float(h_w + 1e-5)
-                if 0.5 <= aspect <= 2.5:
-                    no_helmet_dets.append(det)
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                    cv2.putText(annotated_frame, f"NO HELMET! ({conf:.2f})", (x1, max(30, y1 - 10)), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                raw_no_helmet_dets.append(det)
             elif cls_name in ["lp", "license_plate", "license-plate", "plate"]:
                 lp_dets.append(det)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 0), 3)
                 cv2.putText(annotated_frame, "License Plate", (x1, max(30, y1 - 10)), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+        # Lọc nâng cao cho nhãn NO HELMET (Loại bỏ xung đột với Helmet và loại bỏ Mũ Bảo Hiểm Màu Trắng)
+        for nh in raw_no_helmet_dets:
+            x1, y1, x2, y2 = nh["bbox"]
+            conf = nh["conf"]
+            h_w = x2 - x1
+            h_h = y2 - y1
+            aspect = h_h / float(h_w + 1e-5)
+            
+            # 1. Kiểm tra tỷ lệ khung hình & threshold
+            if conf < NO_HELMET_CONF_THRESH or not (0.5 <= aspect <= 2.5):
+                continue
+                
+            # 2. Kiểm tra IoU xem có bị đè/xung đột với nhãn Helmet (Đội mũ) không
+            has_helmet_overlap = False
+            for h_det in helmet_dets:
+                if compute_iou(nh["bbox"], h_det["bbox"]) > 0.15:
+                    has_helmet_overlap = True
+                    break
+            if has_helmet_overlap:
+                continue
+
+            # 3. Kiểm tra xem có phải Mũ Bảo Hiểm Trắng/Sáng màu không (dựa vào dải màu HSV)
+            head_crop = frame[max(0, y1):min(h_frame, y2), max(0, x1):min(w_frame, x2)]
+            if is_white_helmet(head_crop):
+                continue
+
+            # Nếu vượt qua tất cả các bước lọc -> Mới xác nhận là KHÔNG ĐỘI MŨ
+            no_helmet_dets.append(nh)
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.putText(annotated_frame, f"NO HELMET! ({conf:.2f})", (x1, max(30, y1 - 10)), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         # 3. Theo dõi & Xử lý XE MÁY
         track_kwargs = {"persist": True, "conf": 0.25, "imgsz": 640, "verbose": False}
