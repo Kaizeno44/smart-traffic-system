@@ -1,6 +1,6 @@
-ultralytics==8.0.0  # Chạy YOLOv8
-opencv-python       # Xử lý video/hình ảnh
+ultralytics
+opencv-python
 numpy
-pika                # Gửi dữ liệu qua RabbitMQ
-easyocr             # Đọc chữ biển số (thay thế VGG16 cho nhẹ)
-sort-track          # Hoặc lap, deep_sort_realtime để tracking xe
+pika
+easyocr
+sort-track
