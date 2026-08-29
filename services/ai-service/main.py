@@ -8,6 +8,7 @@ from core.ocr import PaddleOCR
 from core.detection import analyze_frame
 from core.tracking import VehicleTracker
 from core.rules import is_violation, build_violation_payload
+from publisher import send_violation
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
@@ -304,6 +305,15 @@ def run_traffic_system(video_path):
                         print(f"-> Thời gian   : {now_str}")
                         print(f"-> Bằng chứng  : {evidence_path}")
                         print("=" * 65)
+
+                        send_violation(
+                            vehicle_id=bike_id, 
+                            plate_number=detected_lp_str if detected_lp_str else "CHƯA RÕ BIỂN SỐ", 
+                            violation_type="KHÔNG ĐỘI MŨ BẢO HIỂM", 
+                            confidence=no_helmet_conf, 
+                            timestamp=now_str, 
+                            image_path=evidence_path
+                        )
         # 7. DỌN RÁC BỘ NHỚ (Giải phóng RAM cho các xe đã đi qua vạch)
         expired_ids = [bid for bid, last_frame in bike_last_seen.items() if frame_count - last_frame > 30]
         for bid in expired_ids:
