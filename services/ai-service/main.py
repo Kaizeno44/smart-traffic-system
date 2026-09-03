@@ -37,8 +37,8 @@ def is_white_helmet(crop):
     total_pixels = crop.shape[0] * crop.shape[1]
     white_ratio = white_pixels / float(total_pixels + 1e-5)
     
-    # Nếu vùng được chọn có trên 18% diện tích là màu trắng/sáng -> Là mũ bảo hiểm trắng
-    return white_ratio > 0.18
+    # Nếu vùng được chọn có trên 35% diện tích là màu trắng/sáng -> Là mũ bảo hiểm trắng
+    return white_ratio > 0.35
 
 def run_traffic_system(video_path):
     
@@ -117,8 +117,8 @@ def run_traffic_system(video_path):
         no_helmet_dets = []
         lp_dets = []
 
-        # Ngưỡng Confidence riêng cho lỗi KHÔNG ĐỘI MŨ BẢO HIỂM (nâng lên 0.72 để triệt tiêu các dự đoán nghi ngờ ~0.69)
-        NO_HELMET_CONF_THRESH = 0.72
+        # Ngưỡng Confidence riêng cho lỗi KHÔNG ĐỘI MŨ BẢO HIỂM (đặt lại 0.45 để phát hiện nhạy hơn)
+        NO_HELMET_CONF_THRESH = 0.45
 
         raw_no_helmet_dets = []
 
@@ -150,13 +150,13 @@ def run_traffic_system(video_path):
             aspect = h_h / float(h_w + 1e-5)
             
             # 1. Kiểm tra tỷ lệ khung hình & threshold
-            if conf < NO_HELMET_CONF_THRESH or not (0.5 <= aspect <= 2.5):
+            if conf < NO_HELMET_CONF_THRESH or not (0.4 <= aspect <= 3.0):
                 continue
                 
             # 2. Kiểm tra IoU xem có bị đè/xung đột với nhãn Helmet (Đội mũ) không
             has_helmet_overlap = False
             for h_det in helmet_dets:
-                if compute_iou(nh["bbox"], h_det["bbox"]) > 0.15:
+                if compute_iou(nh["bbox"], h_det["bbox"]) > 0.30:
                     has_helmet_overlap = True
                     break
             if has_helmet_overlap:
@@ -198,7 +198,7 @@ def run_traffic_system(video_path):
 
                 # Mở rộng vùng xe để kiểm tra người ngồi trên xe
                 expanded_y1 = max(0, by1 - int((by2 - by1) * 1.0))
-                head_max_y = by1 + int((by2 - by1) * 0.55) # Đầu người chỉ nằm ở 55% nửa trên của xe máy (loại bỏ đèn hậu)
+                head_max_y = by1 + int((by2 - by1) * 0.70) # Mở rộng lên 70% thân xe để đảm bảo không bỏ sót đầu người ngồi thấp
 
                 # 4. Đọc và cập nhật biển số xe liên tục (càng lại gần camera càng rõ nét)
                 current_lp_str = bike_plates.get(bike_id, "")
