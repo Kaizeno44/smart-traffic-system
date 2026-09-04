@@ -21,3 +21,16 @@ services:
       - "5672:5672"   # Port chính để ứng dụng Node.js kết nối
       - "15672:15672" # Port dành cho giao diện web quản lý Dashboard của RabbitMQ
     restart: always
+
+  backend:
+    build: ./services/backend-api
+    container_name: smart_traffic_backend
+    ports:
+      - "3000:3000"
+    environment:
+      # Chú ý: Đổi chữ 'localhost' thành chữ 'db' để Backend tìm được container Database
+      - DATABASE_URL=postgres://admin:adminpassword@db:5432/smart_traffic
+    depends_on:
+      - db
+      - rabbitmq
+    restart: always
