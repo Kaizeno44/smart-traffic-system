@@ -34,3 +34,14 @@ services:
       - db
       - rabbitmq
     restart: always
+
+  frontend:
+    build: ./services/frontend-dashboard 
+    container_name: smart_traffic_frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:3000/api
+    depends_on:
+      - backend
+    restart: always
