@@ -28,8 +28,12 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Chú ý: Đổi chữ 'localhost' thành chữ 'db' để Backend tìm được container Database
       - DATABASE_URL=postgres://admin:adminpassword@db:5432/smart_traffic
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+
+    volumes:
+      - ./services/backend-api/public:/app/public
+
     depends_on:
       - db
       - rabbitmq

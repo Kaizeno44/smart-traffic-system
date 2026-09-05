@@ -1,5 +1,6 @@
 from core.ocr import LicensePlateOCR
 import os
+import requests
 import cv2
 import numpy as np
 from datetime import datetime
@@ -8,12 +9,36 @@ from core.ocr import PaddleOCR
 from core.detection import analyze_frame
 from core.tracking import VehicleTracker
 from core.rules import is_violation, build_violation_payload
-from publisher import send_violation
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output_violations")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+def send_violation_to_api(lp_str, evidence_path):
+    # Dùng localhost nếu bạn chạy code AI trực tiếp trên máy tính. 
+    # Nếu AI chạy trong Docker thì đổi thành http://backend:3000/api/violations
+    url = "http://localhost:3000/api/violations"
+    
+    try:
+        files = {
+            'panorama_image': (os.path.basename(evidence_path), open(evidence_path, 'rb'), 'image/jpeg'),
+            'license_plate_image': (os.path.basename(evidence_path), open(evidence_path, 'rb'), 'image/jpeg')
+        }
+        data = {
+            'license_plate': lp_str if lp_str else 'CHƯA RÕ BIỂN SỐ',
+            'vehicle_type': 'MOTORCYCLE',
+            'violation_type': 'NO_HELMET'
+        }
+        
+        res = requests.post(url, data=data, files=files)
+        print(f"-> [API] Đã đẩy dữ liệu thành công! (Mã lỗi: {res.status_code})")
+    except Exception as e:
+        print(f"-> [API] Lỗi kết nối Backend: {e}")
+    finally:
+        if 'files' in locals():
+            files['panorama_image'][1].close()
+            files['license_plate_image'][1].close()
 
 def compute_iou(boxA, boxB):
     xA = max(boxA[0], boxB[0])
@@ -38,8 +63,8 @@ def is_white_helmet(crop):
     total_pixels = crop.shape[0] * crop.shape[1]
     white_ratio = white_pixels / float(total_pixels + 1e-5)
     
-    # Nếu vùng được chọn có trên 18% diện tích là màu trắng/sáng -> Là mũ bảo hiểm trắng
-    return white_ratio > 0.18
+    # Nếu vùng được chọn có trên 35% diện tích là màu trắng/sáng -> Là mũ bảo hiểm trắng
+    return white_ratio > 0.35
 
 def run_traffic_system(video_path):
     
@@ -118,8 +143,8 @@ def run_traffic_system(video_path):
         no_helmet_dets = []
         lp_dets = []
 
-        # Ngưỡng Confidence riêng cho lỗi KHÔNG ĐỘI MŨ BẢO HIỂM (nâng lên 0.72 để triệt tiêu các dự đoán nghi ngờ ~0.69)
-        NO_HELMET_CONF_THRESH = 0.72
+        # Ngưỡng Confidence riêng cho lỗi KHÔNG ĐỘI MŨ BẢO HIỂM (đặt lại 0.45 để phát hiện nhạy hơn)
+        NO_HELMET_CONF_THRESH = 0.45
 
         raw_no_helmet_dets = []
 
@@ -151,13 +176,13 @@ def run_traffic_system(video_path):
             aspect = h_h / float(h_w + 1e-5)
             
             # 1. Kiểm tra tỷ lệ khung hình & threshold
-            if conf < NO_HELMET_CONF_THRESH or not (0.5 <= aspect <= 2.5):
+            if conf < NO_HELMET_CONF_THRESH or not (0.4 <= aspect <= 3.0):
                 continue
                 
             # 2. Kiểm tra IoU xem có bị đè/xung đột với nhãn Helmet (Đội mũ) không
             has_helmet_overlap = False
             for h_det in helmet_dets:
-                if compute_iou(nh["bbox"], h_det["bbox"]) > 0.15:
+                if compute_iou(nh["bbox"], h_det["bbox"]) > 0.30:
                     has_helmet_overlap = True
                     break
             if has_helmet_overlap:
@@ -199,7 +224,7 @@ def run_traffic_system(video_path):
 
                 # Mở rộng vùng xe để kiểm tra người ngồi trên xe
                 expanded_y1 = max(0, by1 - int((by2 - by1) * 1.0))
-                head_max_y = by1 + int((by2 - by1) * 0.55) # Đầu người chỉ nằm ở 55% nửa trên của xe máy (loại bỏ đèn hậu)
+                head_max_y = by1 + int((by2 - by1) * 0.70) # Mở rộng lên 70% thân xe để đảm bảo không bỏ sót đầu người ngồi thấp
 
                 # 4. Đọc và cập nhật biển số xe liên tục (càng lại gần camera càng rõ nét)
                 current_lp_str = bike_plates.get(bike_id, "")
@@ -306,14 +331,7 @@ def run_traffic_system(video_path):
                         print(f"-> Bằng chứng  : {evidence_path}")
                         print("=" * 65)
 
-                        send_violation(
-                            vehicle_id=bike_id, 
-                            plate_number=detected_lp_str if detected_lp_str else "CHƯA RÕ BIỂN SỐ", 
-                            violation_type="KHÔNG ĐỘI MŨ BẢO HIỂM", 
-                            confidence=no_helmet_conf, 
-                            timestamp=now_str, 
-                            image_path=evidence_path
-                        )
+                        send_violation_to_api(detected_lp_str, evidence_path)
         # 7. DỌN RÁC BỘ NHỚ (Giải phóng RAM cho các xe đã đi qua vạch)
         expired_ids = [bid for bid, last_frame in bike_last_seen.items() if frame_count - last_frame > 30]
         for bid in expired_ids:

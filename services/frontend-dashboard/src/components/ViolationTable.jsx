@@ -29,13 +29,20 @@ const formatTime = (timeString) => {
   return `${time} ${day}`;
 };
 
-const ViolationTable = ({ data = [], onConfirm }) => {
-  // Cấu hình URL gốc của backend để load ảnh trong thư mục /uploads/
-  // Thay thế localhost:5000 bằng port thực tế backend của Dev 2
-  const BASE_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5000';
+// BỔ SUNG: Thêm prop onViewDetail vào đây
+const ViolationTable = ({ data = [], onConfirm, onViewDetail }) => {
+  // Đã sửa lại fallback thành port 3000 cho khớp với Backend của Dev 2
+  const BASE_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:3000';
 
   const handleImageError = (e) => {
     e.target.src = 'https://via.placeholder.com/150x100?text=Lỗi+ảnh';
+  };
+
+  // Hàm xử lý đường dẫn ảnh an toàn (tránh tình trạng thiếu hoặc dư dấu gạch chéo /)
+  const getImageUrl = (path) => {
+    if (!path) return 'https://via.placeholder.com/150x100?text=No+Image';
+    const cleanPath = path.startsWith('/') ? path.substring(1) : path;
+    return `${BASE_URL}/${cleanPath}`;
   };
 
   return (
@@ -74,22 +81,36 @@ const ViolationTable = ({ data = [], onConfirm }) => {
               </td>
               <td className="px-4 py-2 flex justify-center">
                 <img 
-                  src={row.panorama_image_path ? `${BASE_URL}${row.panorama_image_path}` : 'https://via.placeholder.com/150x100?text=No+Image'} 
+                  src={getImageUrl(row.panorama_image_path)} 
                   alt="Bằng chứng" 
                   className="h-16 w-24 object-cover rounded border"
                   onError={handleImageError}
                 />
               </td>
-              <td className="px-4 py-4 text-center">
-                {row.status === 'Pending' && (
+              
+              {/* BỔ SUNG: Cột thao tác chứa 2 nút */}
+              <td className="px-4 py-4">
+                <div className="flex justify-center gap-2">
+                  {/* Nút Chi tiết (Luôn hiển thị) */}
                   <button 
-                    onClick={() => onConfirm(row.id)}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-medium transition"
+                    onClick={() => onViewDetail && onViewDetail(row)}
+                    className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded text-sm font-medium transition"
                   >
-                    Xác nhận
+                    Chi tiết
                   </button>
-                )}
+
+                  {/* Nút Xác nhận (Chỉ hiển thị khi trạng thái là Pending) */}
+                  {row.status === 'Pending' && (
+                    <button 
+                      onClick={() => onConfirm(row.id)}
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm font-medium transition"
+                    >
+                      Xác nhận
+                    </button>
+                  )}
+                </div>
               </td>
+
             </tr>
           ))}
         </tbody>
