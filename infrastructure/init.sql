@@ -19,5 +19,6 @@ CREATE TABLE Evidences (
     id SERIAL PRIMARY KEY,
     violation_id INT REFERENCES Violations(id) ON DELETE CASCADE,
     panorama_image_path TEXT NOT NULL,         -- Đường dẫn lưu ảnh toàn cảnh
-    license_plate_image_path TEXT              -- Đường dẫn lưu ảnh crop biển số
+    license_plate_image_path TEXT,             -- Đường dẫn lưu ảnh crop biển số
+    video_path VARCHAR(255)              
 );

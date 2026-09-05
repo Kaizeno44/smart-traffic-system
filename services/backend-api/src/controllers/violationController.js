@@ -16,6 +16,10 @@ const createViolation = async (req, res) => {
     ? '/uploads/' + req.files['license_plate_image'][0].filename 
     : null;
 
+  const video_path = req.files && req.files['violation_video'] 
+    ? '/uploads/' + req.files['violation_video'][0].filename 
+    : null;
+
   try {
     // 1. Gom tất cả dữ liệu lại thành một object
     const violationData = {
@@ -24,6 +28,7 @@ const createViolation = async (req, res) => {
       violation_type,
       panorama_image_path,
       license_plate_image_path,
+      video_path,
       timestamp: new Date().toISOString()
     };
 

@@ -1,41 +1,39 @@
 import React from 'react';
 
-// Hàm chuẩn hóa loại xe
+// Ham chuan hoa loai xe
 const formatVehicleType = (type) => {
   const map = {
-    'motorbike': 'Xe máy',
-    'xe may': 'Xe máy',
-    'car': 'Ô tô'
+    'motorbike': 'Xe may',
+    'xe may': 'Xe may',
+    'car': 'O to'
   };
   return map[type?.toLowerCase()] || type;
 };
 
-// Hàm chuẩn hóa lỗi vi phạm
+// Ham chuan hoa loi vi pham
 const formatViolationError = (error) => {
   const map = {
-    'no_helmet': 'KHÔNG ĐỘI MŨ BẢO HIỂM',
-    'red_light': 'VƯỢT ĐÈN ĐỎ'
+    'no_helmet': 'KHONG DOI MU BAO HIEM',
+    'red_light': 'VUOT DEN DO'
   };
   return map[error?.toLowerCase()] || error;
 };
 
-// Hàm định dạng thời gian từ chuỗi ISO sang định dạng giống ảnh (HH:MM:SS DD/MM/YYYY)
+// Ham dinh dang thoi gian
 const formatTime = (timeString) => {
   if (!timeString) return '';
   const date = new Date(timeString);
-  // Sử dụng múi giờ Việt Nam
   const time = date.toLocaleTimeString('vi-VN', { hour12: false }); 
   const day = date.toLocaleDateString('vi-VN');
   return `${time} ${day}`;
 };
 
-const ViolationTable = ({ data = [], onConfirm }) => {
-  // Cấu hình URL gốc của backend để load ảnh trong thư mục /uploads/
-  // Thay thế localhost:5000 bằng port thực tế backend của Dev 2
-  const BASE_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5000';
+// Them prop processingId de quan ly trang thai nut bam
+const ViolationTable = ({ data = [], onConfirm, processingId }) => {
+  const BASE_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:3000';
 
   const handleImageError = (e) => {
-    e.target.src = 'https://via.placeholder.com/150x100?text=Lỗi+ảnh';
+    e.target.src = 'https://via.placeholder.com/150x100?text=Loi+anh';
   };
 
   return (
@@ -44,13 +42,13 @@ const ViolationTable = ({ data = [], onConfirm }) => {
         <thead className="bg-gray-50">
           <tr>
             <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">ID</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Biển số</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Loại xe</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Lỗi vi phạm</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Thời gian</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Trạng thái</th>
-            <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">Bằng chứng</th>
-            <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">Thao tác</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Bien so</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Loai xe</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Loi vi pham</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Thoi gian</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Trang thai</th>
+            <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">Bang chung</th>
+            <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">Thao tac</th>
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
@@ -73,20 +71,34 @@ const ViolationTable = ({ data = [], onConfirm }) => {
                 </span>
               </td>
               <td className="px-4 py-2 flex justify-center">
-                <img 
-                  src={row.panorama_image_path ? `${BASE_URL}${row.panorama_image_path}` : 'https://via.placeholder.com/150x100?text=No+Image'} 
-                  alt="Bằng chứng" 
-                  className="h-16 w-24 object-cover rounded border"
-                  onError={handleImageError}
-                />
+                {/* Logic render rieng cho video va anh */}
+                {row.video_path ? (
+                  <video 
+                    src={`${BASE_URL}${row.video_path}`}
+                    controls 
+                    className="h-20 w-32 object-cover rounded border"
+                  />
+                ) : (
+                  <img 
+                    src={row.panorama_image_path ? `${BASE_URL}${row.panorama_image_path}` : 'https://via.placeholder.com/150x100?text=No+Image'} 
+                    alt="Bang chung" 
+                    className="h-16 w-24 object-cover rounded border"
+                    onError={handleImageError}
+                  />
+                )}
               </td>
               <td className="px-4 py-4 text-center">
                 {row.status === 'Pending' && (
                   <button 
                     onClick={() => onConfirm(row.id)}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-medium transition"
+                    disabled={processingId === row.id}
+                    className={`px-4 py-1.5 rounded text-sm font-medium transition text-white ${
+                      processingId === row.id 
+                        ? 'bg-gray-400 cursor-not-allowed' 
+                        : 'bg-blue-600 hover:bg-blue-700'
+                    }`}
                   >
-                    Xác nhận
+                    {processingId === row.id ? 'Dang xu ly...' : 'Xac nhan'}
                   </button>
                 )}
               </td>
