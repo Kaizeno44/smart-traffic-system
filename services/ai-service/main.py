@@ -157,7 +157,7 @@ def run_traffic_system(video_path):
         frame_count += 1 
 
         # Chỉ xử lý 1 frame sau mỗi 5 frame (Video sẽ chạy nhanh gấp 5 lần)
-        if frame_count % 7 != 0: 
+        if frame_count % 5 != 0: 
             continue
 
         annotated_frame = frame.copy()
@@ -485,7 +485,7 @@ def run_traffic_system(video_path):
     print(f"\n[HOÀN THÀNH] Tổng số vi phạm bắt được: {violation_count}")
 
 if __name__ == "__main__":
-    test_video = os.path.join(BASE_DIR, "kodoimu1.mp4")
+    test_video = os.path.join(BASE_DIR, "dendo2.mp4")
     if os.path.exists(test_video):
         run_traffic_system(test_video)
     else:
