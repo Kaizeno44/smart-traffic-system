@@ -4,6 +4,8 @@ import os
 import requests
 import cv2
 import numpy as np
+import re
+import threading
 from datetime import datetime
 from ultralytics import YOLO
 from core.ocr import PaddleOCR
@@ -15,6 +17,17 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output_violations")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+def format_vn_license_plate(raw_text):
+    """Xóa các ký tự thừa và chèn dấu '-' chuẩn form biển số xe máy VN"""
+    # Xóa sạch mọi ký tự không phải là chữ cái (A-Z) hoặc số (0-9)
+    clean_text = re.sub(r'[^A-Z0-9]', '', raw_text.upper())
+    
+    # Biển xe máy VN chuẩn thường có độ dài 8 hoặc 9 ký tự
+    if len(clean_text) >= 8:
+        # Tự động cắt 4 ký tự đầu, chèn dấu '-', rồi nối với phần còn lại
+        return clean_text[:4] + "-" + clean_text[4:]
+    return raw_text # Nếu biển quá ngắn/lỗi, trả về nguyên bản
 
 def send_violation_to_api(lp_str, evidence_path, violation_type="NO_HELMET"): # [SỬA] Thêm tham số violation_type
     url = "http://localhost:3000/api/violations"
@@ -144,7 +157,7 @@ def run_traffic_system(video_path):
         frame_count += 1 
 
         # Chỉ xử lý 1 frame sau mỗi 5 frame (Video sẽ chạy nhanh gấp 5 lần)
-        if frame_count % 5 != 0: 
+        if frame_count % 7 != 0: 
             continue
 
         annotated_frame = frame.copy()
@@ -166,7 +179,7 @@ def run_traffic_system(video_path):
         lp_dets = []
 
         # Ngưỡng Confidence riêng cho lỗi KHÔNG ĐỘI MŨ BẢO HIỂM (đặt lại 0.45 để phát hiện nhạy hơn)
-        NO_HELMET_CONF_THRESH = 0.45
+        NO_HELMET_CONF_THRESH = 0.6
 
         raw_no_helmet_dets = []
 
@@ -222,7 +235,8 @@ def run_traffic_system(video_path):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         # 3. Theo dõi & Xử lý XE MÁY
-        track_kwargs = {"persist": True, "conf": 0.25, "imgsz": 640, "verbose": False}
+        # Giảm conf, Tăng imgsz, Thêm iou để bắt xe đông đúc
+        track_kwargs = {"persist": True, "conf": 0.15, "imgsz": 800, "iou": 0.9, "verbose": False}
         if use_yolo_fallback:
             track_kwargs["classes"] = [3] # Class 3 = motorbike
             
@@ -320,8 +334,30 @@ def run_traffic_system(video_path):
                         if lp_crop.size > 0:
                             # read_str = read_license_plate(ocr_model, lp_crop)
                             read_str, ocr_conf = ocr_model.read_plate(lp_crop)
-                        # ĐOẠN MỚI: Ưu tiên lấy chuỗi có định dạng chuẩn (có dấu '-')
+                            
+                        # ĐOẠN MỚI: Ép chuẩn định dạng VN và Xử lý lỗi đọc ngược dòng
                         if read_str:
+                            import re # Kéo thư viện xử lý chuỗi
+                            
+                            # 1. Lọc sạch mọi dấu câu/khoảng trắng thừa, chỉ giữ lại chữ cái và số
+                            clean_chars = "".join(c for c in read_str.upper() if c.isalnum())
+                            
+                            # 2. XỬ LÝ LỖI ĐỌC NGƯỢC DÒNG
+                            # Nếu chuỗi bắt đầu bằng 4-5 con số, và kết thúc bằng mã tỉnh + chữ cái (VD: 0903481AB)
+                            match_reversed = re.match(r'^(\d{4,5})(\d{2}[A-Z]{1,2}\d?)$', clean_chars)
+                            if match_reversed:
+                                # Lật đúng thứ tự: Dòng trên (group 2) + Dòng dưới (group 1)
+                                clean_chars = match_reversed.group(2) + match_reversed.group(1)
+                            
+                            # 3. Nếu đọc được đủ 8 ký tự trở lên -> Tự động chèn '-' vào sau ký tự thứ 4
+                            if len(clean_chars) >= 8:
+                                read_str = clean_chars[:4] + "-" + clean_chars[4:]
+                            else:
+                                read_str = clean_chars
+                            
+                            # =======================================================
+                            # LOGIC CŨ CỦA BẠN (Giữ nguyên không đổi)
+                            # =======================================================
                             # Nếu hiện tại chưa có biển số, hoặc biển số mới có chứa dấu '-' (chuẩn form) mà biển số cũ chưa có
                             if not current_lp_str or ("-" in read_str and "-" not in current_lp_str):
                                 current_lp_str = read_str
@@ -426,8 +462,8 @@ def run_traffic_system(video_path):
                             print("=" * 65)
 
                             # Gửi API với đúng loại lỗi
-                            send_violation_to_api(detected_lp_str, evidence_path, violation_type=v_type)
-
+                            api_thread = threading.Thread(target=send_violation_to_api, args=(detected_lp_str, evidence_path, v_type))
+                            api_thread.start()
         # 7. DỌN RÁC BỘ NHỚ (Giải phóng RAM cho các xe đã đi qua vạch)
         expired_ids = [bid for bid, last_frame in bike_last_seen.items() if frame_count - last_frame > 30]
         for bid in expired_ids:
@@ -449,7 +485,7 @@ def run_traffic_system(video_path):
     print(f"\n[HOÀN THÀNH] Tổng số vi phạm bắt được: {violation_count}")
 
 if __name__ == "__main__":
-    test_video = os.path.join(BASE_DIR, "dendo1.mp4")
+    test_video = os.path.join(BASE_DIR, "kodoimu1.mp4")
     if os.path.exists(test_video):
         run_traffic_system(test_video)
     else:
