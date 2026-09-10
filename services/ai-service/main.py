@@ -70,8 +70,18 @@ def run_traffic_system(video_path):
     ocr_model = LicensePlateOCR()
     print("[2/3] Nạp mô hình thành công!")
     tracker = VehicleTracker(screen_threshold_ratio=0.5)
-    cap = cv2.VideoCapture(video_path)
+# ĐOẠN CODE CŨ (Đọc từ file MP4):
+    # cap = cv2.VideoCapture(video_path)
     
+    # ĐOẠN CODE MỚI (Đọc từ điện thoại):
+    # Số 0 thường là webcam tích hợp sẵn trên laptop.
+    # Số 1 hoặc 2 sẽ là camera điện thoại bạn vừa cắm vào.
+    cap = cv2.VideoCapture(1) 
+    # Ép OpenCV nhận luồng Full HD (1080p) hoặc HD (720p)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    
+    # Nếu hệ thống báo lỗi không mở được camera, hãy thử đổi lại thành 0.    
     # --------------------------------------------------------------------------
     # [GHI CHÚ] CODE TỰ ĐỘNG FALLBACK KHI DÙNG MOTO_BEST.PT (HIỆN TẠI ĐÃ ĐÓNG)
     # ret_test, frame_test = cap.read()
@@ -87,8 +97,9 @@ def run_traffic_system(video_path):
     violation_count = 0
     print("[3/3] Bắt đầu quét video...")
 
-    # Dictionary lưu giữ thông tin biển số và vi phạm đã xử lý cho từng xe
+    # Dictionary lưu giữ thông tin biển số, độ tự tin OCR và vi phạm đã xử lý cho từng xe
     bike_plates = {}
+    bike_plate_confs = {}
     bike_recorded_violations = {}
     
     # [MỚI] Dictionary theo dõi thời gian xuất hiện cuối cùng của xe để chống tràn RAM
@@ -202,6 +213,8 @@ def run_traffic_system(video_path):
 
                 # 4. Đọc và cập nhật biển số xe liên tục (càng lại gần camera càng rõ nét)
                 current_lp_str = bike_plates.get(bike_id, "")
+                current_lp_conf = bike_plate_confs.get(bike_id, 0.0)
+                
                 for lp in lp_dets:
                     lx1, ly1, lx2, ly2 = lp["bbox"]
                     if bx1 - 30 <= lx1 and lx2 <= bx2 + 30 and by1 - 50 <= ly1 and ly2 <= by2 + 50:
@@ -210,20 +223,32 @@ def run_traffic_system(video_path):
                         crop_y1 = max(0, ly1 - lp_pad)
                         crop_x2 = min(w_frame, lx2 + lp_pad)
                         crop_y2 = min(h_frame, ly2 + lp_pad)
-                        lp_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
-                        if lp_crop.size > 0:
-                            # read_str = read_license_plate(ocr_model, lp_crop)
+                        crop_w = crop_x2 - crop_x1
+                        crop_h = crop_y2 - crop_y1
+                        
+                        # Chỉ chạy OCR khi biển số đủ rõ và kích thước tối thiểu (tránh xa quá bị đọc rác)
+                        if crop_w >= 28 and crop_h >= 16:
+                            lp_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
                             read_str, ocr_conf = ocr_model.read_plate(lp_crop)
-                        # ĐOẠN MỚI: Ưu tiên lấy chuỗi có định dạng chuẩn (có dấu '-')
-                        if read_str:
-                            # Nếu hiện tại chưa có biển số, hoặc biển số mới có chứa dấu '-' (chuẩn form) mà biển số cũ chưa có
-                            if not current_lp_str or ("-" in read_str and "-" not in current_lp_str):
-                                current_lp_str = read_str
-                                bike_plates[bike_id] = read_str
-                            # Nếu cả hai đều có định dạng chuẩn, ưu tiên chuỗi có độ dài hợp lý từ 8-10 ký tự
-                            elif "-" in read_str and 8 <= len(read_str.replace(" ", "")) <= 10:
-                                current_lp_str = read_str
-                                bike_plates[bike_id] = read_str
+                            
+                            if read_str and ocr_conf >= 0.50:
+                                # Kiểm tra xem chuỗi có định dạng chuẩn không (có dấu '-' hoặc cách)
+                                is_standard = ("-" in read_str or " " in read_str)
+                                curr_is_standard = ("-" in current_lp_str or " " in current_lp_str)
+                                
+                                # Cập nhật nếu:
+                                # 1. Xe chưa có biển số
+                                # 2. Chuỗi mới có định dạng chuẩn mà chuỗi cũ chưa có
+                                # 3. Hoặc chuỗi mới có độ tự tin (confidence) cao hơn chuỗi cũ khi xe lại gần
+                                if not current_lp_str:
+                                    bike_plates[bike_id] = read_str
+                                    bike_plate_confs[bike_id] = ocr_conf
+                                elif is_standard and not curr_is_standard:
+                                    bike_plates[bike_id] = read_str
+                                    bike_plate_confs[bike_id] = ocr_conf
+                                elif is_standard == curr_is_standard and ocr_conf > current_lp_conf:
+                                    bike_plates[bike_id] = read_str
+                                    bike_plate_confs[bike_id] = ocr_conf
 
                 detected_lp_str = bike_plates.get(bike_id, "")
                 if detected_lp_str:
@@ -308,6 +333,7 @@ def run_traffic_system(video_path):
         expired_ids = [bid for bid, last_frame in bike_last_seen.items() if frame_count - last_frame > 30]
         for bid in expired_ids:
             if bid in bike_plates: del bike_plates[bid]
+            if bid in bike_plate_confs: del bike_plate_confs[bid]
             if bid in bike_recorded_violations: del bike_recorded_violations[bid]
             del bike_last_seen[bid]
         # Hiển thị trực tiếp video giám sát giữ nguyên tỷ lệ khung hình chuẩn

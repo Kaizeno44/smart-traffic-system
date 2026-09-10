@@ -303,20 +303,23 @@ class LicensePlateOCR:
 
     def format_plate_text(self, text):
         text = re.sub(r'[^A-Z0-9\-\.]', '', text.upper())
-        if re.match(r'^\d{2}[A-Z]{1,2}\d{0,1}\-\d{3,4}(\.\d{2})?$', text):
+        if re.match(r'^\d{2}\-[A-Z]{1,2}\d{0,1}\s?\d{3,5}(\.\d{2})?$', text):
             return text
             
         raw = re.sub(r'[\-\.]', '', text)
         raw = self.correct_confusion_characters(raw)
         
-        match = re.match(r'^(\d{2})([A-Z]{1,2}\d{0,1})(\d{3,5})$', raw)
+        # Biển số xe máy VN: 2 số mã tỉnh + 1 hoặc 2 ký tự sê-ri (có thể kèm 1 số) + 4-5 số
+        match = re.match(r'^([1-9]\d)([A-Z]{1,2}\d?)(\d{4,5})$', raw)
         if match:
             city_code = match.group(1)
             series = match.group(2)
             numbers = match.group(3)
             if len(numbers) == 5:
-                numbers = f"{numbers[:3]}.{numbers[3:]}"
-            return f"{city_code}{series}-{numbers}"
+                numbers_fmt = f"{numbers[:3]}.{numbers[3:]}"
+            else:
+                numbers_fmt = numbers
+            return f"{city_code}-{series} {numbers_fmt}"
             
         return text
 
