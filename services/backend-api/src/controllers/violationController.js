@@ -6,7 +6,8 @@ const pool = new Pool({
 });
 
 const createViolation = async (req, res) => {
-  const { license_plate, vehicle_type, violation_type } = req.body;
+  // BỔ SUNG: Nhận thêm light_status và confidence từ request của AI
+  const { license_plate, vehicle_type, violation_type, light_status, confidence } = req.body;
 
   const panorama_image_path = req.files && req.files['panorama_image'] 
     ? '/uploads/' + req.files['panorama_image'][0].filename 
@@ -16,14 +17,21 @@ const createViolation = async (req, res) => {
     ? '/uploads/' + req.files['license_plate_image'][0].filename 
     : null;
 
+  const video_path = req.files && req.files['violation_video'] 
+    ? '/uploads/' + req.files['violation_video'][0].filename 
+    : null;
+
   try {
-    // 1. Gom tất cả dữ liệu lại thành một object
+    // 1. Gom tất cả dữ liệu lại thành một object (Thêm các trường mới)
     const violationData = {
       license_plate,
       vehicle_type,
       violation_type,
+      light_status, // AI sẽ truyền màu đèn (VD: 'red')
+      confidence,   // Độ tin cậy (nếu có)
       panorama_image_path,
       license_plate_image_path,
+      video_path,
       timestamp: new Date().toISOString()
     };
 
@@ -42,10 +50,22 @@ const createViolation = async (req, res) => {
     res.status(500).json({ success: false, message: 'Lỗi server' });
   }
 };
+
 const getViolations = async (req, res) => {
   try {
+    // BỔ SUNG: Lấy thêm v.extra_info (màu đèn) và e.video_path (để FE play video)
     const query = `
-      SELECT v.id, veh.license_plate, veh.vehicle_type, v.violation_type, v.violation_time, v.status, e.panorama_image_path, e.license_plate_image_path
+      SELECT 
+        v.id, 
+        veh.license_plate, 
+        veh.vehicle_type, 
+        v.violation_type, 
+        v.violation_time, 
+        v.status, 
+        v.extra_info, 
+        e.panorama_image_path, 
+        e.license_plate_image_path,
+        e.video_path
       FROM Violations v
       JOIN Vehicles veh ON v.vehicle_id = veh.id
       LEFT JOIN Evidences e ON v.id = e.violation_id
@@ -62,7 +82,8 @@ const getViolations = async (req, res) => {
     res.status(500).json({ success: false, message: 'Lỗi server khi lấy dữ liệu' });
   }
 };
-// Hàm mới: Cập nhật trạng thái vi phạm
+
+// Hàm: Cập nhật trạng thái vi phạm
 const updateStatus = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -87,6 +108,7 @@ const updateStatus = async (req, res) => {
     res.status(500).json({ success: false, message: 'Lỗi server khi cập nhật' });
   }
 };
+
 module.exports = {
   createViolation,
   getViolations,

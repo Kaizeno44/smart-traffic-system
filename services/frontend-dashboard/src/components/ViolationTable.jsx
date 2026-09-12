@@ -1,44 +1,42 @@
 import React from 'react';
 
-// Hàm chuẩn hóa loại xe
+// Ham chuan hoa loai xe
 const formatVehicleType = (type) => {
   const map = {
-    'motorbike': 'Xe máy',
-    'xe may': 'Xe máy',
-    'car': 'Ô tô'
+    'motorbike': 'Xe may',
+    'xe may': 'Xe may',
+    'car': 'O to'
   };
   return map[type?.toLowerCase()] || type;
 };
 
-// Hàm chuẩn hóa lỗi vi phạm
+// Ham chuan hoa loi vi pham
 const formatViolationError = (error) => {
   const map = {
-    'no_helmet': 'KHÔNG ĐỘI MŨ BẢO HIỂM',
-    'red_light': 'VƯỢT ĐÈN ĐỎ'
+    'no_helmet': 'KHONG DOI MU BAO HIEM',
+    'red_light': 'VUOT DEN DO'
   };
   return map[error?.toLowerCase()] || error;
 };
 
-// Hàm định dạng thời gian từ chuỗi ISO sang định dạng giống ảnh (HH:MM:SS DD/MM/YYYY)
+// Ham dinh dang thoi gian
 const formatTime = (timeString) => {
   if (!timeString) return '';
   const date = new Date(timeString);
-  // Sử dụng múi giờ Việt Nam
   const time = date.toLocaleTimeString('vi-VN', { hour12: false }); 
   const day = date.toLocaleDateString('vi-VN');
   return `${time} ${day}`;
 };
 
-// BỔ SUNG: Thêm prop onViewDetail vào đây
-const ViolationTable = ({ data = [], onConfirm, onViewDetail }) => {
-  // Đã sửa lại fallback thành port 3000 cho khớp với Backend của Dev 2
+// GỘP PROPS: Giữ processingId của bạn và onViewDetail của Hoang
+const ViolationTable = ({ data = [], onConfirm, processingId, onViewDetail }) => {
   const BASE_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:3000';
 
   const handleImageError = (e) => {
-    e.target.src = 'https://via.placeholder.com/150x100?text=Lỗi+ảnh';
+    e.target.src = 'https://via.placeholder.com/150x100?text=Loi+anh';
   };
 
-  // Hàm xử lý đường dẫn ảnh an toàn (tránh tình trạng thiếu hoặc dư dấu gạch chéo /)
+  // Hàm xử lý đường dẫn ảnh an toàn của Hoang
   const getImageUrl = (path) => {
     if (!path) return 'https://via.placeholder.com/150x100?text=No+Image';
     const cleanPath = path.startsWith('/') ? path.substring(1) : path;
@@ -51,13 +49,13 @@ const ViolationTable = ({ data = [], onConfirm, onViewDetail }) => {
         <thead className="bg-gray-50">
           <tr>
             <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">ID</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Biển số</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Loại xe</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Lỗi vi phạm</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Thời gian</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Trạng thái</th>
-            <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">Bằng chứng</th>
-            <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">Thao tác</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Bien so</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Loai xe</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Loi vi pham</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Thoi gian</th>
+            <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase">Trang thai</th>
+            <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">Bang chung</th>
+            <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">Thao tac</th>
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
@@ -80,18 +78,26 @@ const ViolationTable = ({ data = [], onConfirm, onViewDetail }) => {
                 </span>
               </td>
               <td className="px-4 py-2 flex justify-center">
-                <img 
-                  src={getImageUrl(row.panorama_image_path)} 
-                  alt="Bằng chứng" 
-                  className="h-16 w-24 object-cover rounded border"
-                  onError={handleImageError}
-                />
+                {/* KẾT HỢP: Logic render video của bạn + helper function của Hoang */}
+                {row.video_path ? (
+                  <video 
+                    src={getImageUrl(row.video_path)}
+                    controls 
+                    className="h-20 w-32 object-cover rounded border"
+                  />
+                ) : (
+                  <img 
+                    src={getImageUrl(row.panorama_image_path)} 
+                    alt="Bang chung" 
+                    className="h-16 w-24 object-cover rounded border"
+                    onError={handleImageError}
+                  />
+                )}
               </td>
               
-              {/* BỔ SUNG: Cột thao tác chứa 2 nút */}
               <td className="px-4 py-4">
                 <div className="flex justify-center gap-2">
-                  {/* Nút Chi tiết (Luôn hiển thị) */}
+                  {/* KẾT HỢP: Nút Chi tiết (Hoang) */}
                   <button 
                     onClick={() => onViewDetail && onViewDetail(row)}
                     className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded text-sm font-medium transition"
@@ -99,18 +105,22 @@ const ViolationTable = ({ data = [], onConfirm, onViewDetail }) => {
                     Chi tiết
                   </button>
 
-                  {/* Nút Xác nhận (Chỉ hiển thị khi trạng thái là Pending) */}
+                  {/* KẾT HỢP: Nút Xác nhận chỉ hiện khi Pending (Hoang) + Loading state (Bạn) */}
                   {row.status === 'Pending' && (
                     <button 
                       onClick={() => onConfirm(row.id)}
-                      className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm font-medium transition"
+                      disabled={processingId === row.id}
+                      className={`px-3 py-1.5 rounded text-sm font-medium transition text-white ${
+                        processingId === row.id 
+                          ? 'bg-gray-400 cursor-not-allowed' 
+                          : 'bg-blue-600 hover:bg-blue-700'
+                      }`}
                     >
-                      Xác nhận
+                      {processingId === row.id ? 'Đang xử lý...' : 'Xác nhận'}
                     </button>
                   )}
                 </div>
               </td>
-
             </tr>
           ))}
         </tbody>

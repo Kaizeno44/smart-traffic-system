@@ -9,6 +9,8 @@ __pycache__/
 .venv/
 venv/
 env/
+venv311/
+venv*/
 
 # Môi trường
 .env
@@ -19,15 +21,19 @@ env/
 *.avi
 *.jpg
 *.png
+*.jpeg
 /services/ai-service/data/
+output_violations/
+
+# AI Models & Weights
+*.h5
+*.pt
+*.onnx
+*.weights
 
 # OS/IDE
 dist/
 .DS_Store
 .idea/
 .vscode/
-
-*.h5
-*.pt
 *.zip
-output_violations/
