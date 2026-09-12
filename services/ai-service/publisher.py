@@ -4,25 +4,37 @@ import os
 # Đường dẫn đến API Backend của bạn
 API_URL = "http://localhost:3000/api/violations"
 
-def send_violation(vehicle_id, plate_number, violation_type, confidence, timestamp, image_path):
+def send_violation(vehicle_id, plate_number, violation_type, confidence, timestamp, image_path, light_status=None, plate_image_path=None, video_path=None):
     """
     Hàm gửi dữ liệu vi phạm và hình ảnh lên Backend Node.js
     """
+    files = {}
     try:
         # 1. Đóng gói dữ liệu dạng chữ (Text)
         data = {
-            "license_plate": plate_number,  # ĐÃ SỬA: Đổi từ plate_number thành license_plate
-            "vehicle_type": "Xe may",       # ĐÃ THÊM: Bổ sung loại phương tiện cho Database
+            "license_plate": plate_number,  
+            "vehicle_type": "Xe may",       # (Có thể truyền tham số động vào đây nếu AI phân loại được ô tô/xe máy)
             "violation_type": violation_type,
             "confidence": confidence,
             "timestamp": str(timestamp)
         }
         
-        # 2. Đóng gói hình ảnh bằng chứng (File)
-        files = {}
+        # BỔ SUNG: Đóng gói trạng thái đèn tín hiệu (Dành riêng cho lỗi vượt đèn đỏ)
+        if light_status:
+            data["light_status"] = light_status
+            
+        # 2. Đóng gói hình ảnh/video bằng chứng (File)
+        # 2.1 Ảnh toàn cảnh (Bắt buộc)
         if image_path and os.path.exists(image_path):
-            # ĐÃ SỬA: Đổi tên trường thành 'panorama_image' để khớp với Multer bên Node.js
             files['panorama_image'] = open(image_path, 'rb')
+            
+        # 2.2 BỔ SUNG: Ảnh crop biển số (Tùy chọn)
+        if plate_image_path and os.path.exists(plate_image_path):
+            files['license_plate_image'] = open(plate_image_path, 'rb')
+            
+        # 2.3 BỔ SUNG: Video vi phạm (Tùy chọn - Giúp Frontend hiển thị được video)
+        if video_path and os.path.exists(video_path):
+            files['violation_video'] = open(video_path, 'rb')
         
         print(f"[Publisher] Dang gui vi pham cua xe {plate_number} len Server...")
         
@@ -38,6 +50,6 @@ def send_violation(vehicle_id, plate_number, violation_type, confidence, timesta
     except Exception as e:
         print(f"[Publisher] Loi ket noi den Backend API: {str(e)}")
     finally:
-        # Đóng file ảnh sau khi gửi xong để giải phóng bộ nhớ
-        if 'panorama_image' in files:
-            files['panorama_image'].close()
+        # Giải phóng bộ nhớ: Đóng tất cả các file đã mở một cách an toàn
+        for key, file_obj in files.items():
+            file_obj.close()

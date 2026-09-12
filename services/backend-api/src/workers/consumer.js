@@ -37,7 +37,6 @@ const startWorker = async () => {
         await client.query('BEGIN'); // Bắt đầu Transaction
 
         // 1. Thêm phương tiện (Sử dụng Upsert để tránh Race Condition)
-        // Yêu cầu: Cột license_plate trong database phải được thiết lập UNIQUE
         const upsertVehicleQuery = `
           INSERT INTO Vehicles (license_plate, vehicle_type) 
           VALUES ($1, $2)
@@ -48,12 +47,27 @@ const startWorker = async () => {
         const vehicleRes = await client.query(upsertVehicleQuery, [data.license_plate, data.vehicle_type]);
         const vehicleId = vehicleRes.rows[0].id;
 
-        // 2. Thêm thông tin vi phạm (Violations)
+        // --- BỔ SUNG: Gom các thông tin mở rộng từ AI (VD: Màu đèn, độ tin cậy) ---
+        const extraInfo = {};
+        if (data.light_status) {
+          extraInfo.light_status = data.light_status; // Sẽ lưu 'red', 'yellow'...
+        }
+        // Dự phòng cho sau này AI gửi thêm độ tự tin (confidence)
+        if (data.confidence) {
+          extraInfo.confidence = data.confidence;
+        }
+
+        // 2. Thêm thông tin vi phạm (Bổ sung cột extra_info)
         const insertViolationQuery = `
-          INSERT INTO Violations (vehicle_id, violation_type) 
-          VALUES ($1, $2) RETURNING id;
+          INSERT INTO Violations (vehicle_id, violation_type, extra_info) 
+          VALUES ($1, $2, $3) RETURNING id;
         `;
-        const violationRes = await client.query(insertViolationQuery, [vehicleId, data.violation_type]);
+        // Chèn thêm extraInfo (thư viện pg của Node.js sẽ tự động chuyển Object thành JSONB cho PostgreSQL)
+        const violationRes = await client.query(insertViolationQuery, [
+          vehicleId, 
+          data.violation_type, 
+          extraInfo 
+        ]);
         const violationId = violationRes.rows[0].id;
 
         // 3. Thêm đường dẫn ảnh bằng chứng (Evidences)
@@ -79,9 +93,6 @@ const startWorker = async () => {
         console.error(`[!] Lỗi khi lưu dữ liệu xe ${data.license_plate}:`, dbError.message);
         
         // Báo cho RabbitMQ biết tin nhắn bị lỗi.
-        // Tham số thứ 2 (allUpTo): false (chỉ áp dụng cho msg này)
-        // Tham số thứ 3 (requeue): false (vứt bỏ msg, không đưa lại vào queue để tránh lặp vô hạn). 
-        // Nếu hệ thống của bạn có cấu hình Dead Letter Exchange (DLX), msg sẽ được đưa vào đó.
         channel.nack(msg, false, false); 
       } finally {
         // Giải phóng client trả về pool bất kể thành công hay thất bại
