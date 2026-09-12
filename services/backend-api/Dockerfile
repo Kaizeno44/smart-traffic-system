@@ -5,6 +5,8 @@ COPY package*.json ./
 RUN npm install
 # Copy toàn bộ mã nguồn
 COPY . .
+
+RUN mkdir -p public/uploads
 # Mở cổng 3000
 EXPOSE 3000
 # Lệnh khởi chạy server

@@ -28,12 +28,19 @@ const formatTime = (timeString) => {
   return `${time} ${day}`;
 };
 
-// Them prop processingId de quan ly trang thai nut bam
-const ViolationTable = ({ data = [], onConfirm, processingId }) => {
+// GỘP PROPS: Giữ processingId của bạn và onViewDetail của Hoang
+const ViolationTable = ({ data = [], onConfirm, processingId, onViewDetail }) => {
   const BASE_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:3000';
 
   const handleImageError = (e) => {
     e.target.src = 'https://via.placeholder.com/150x100?text=Loi+anh';
+  };
+
+  // Hàm xử lý đường dẫn ảnh an toàn của Hoang
+  const getImageUrl = (path) => {
+    if (!path) return 'https://via.placeholder.com/150x100?text=No+Image';
+    const cleanPath = path.startsWith('/') ? path.substring(1) : path;
+    return `${BASE_URL}/${cleanPath}`;
   };
 
   return (
@@ -71,36 +78,48 @@ const ViolationTable = ({ data = [], onConfirm, processingId }) => {
                 </span>
               </td>
               <td className="px-4 py-2 flex justify-center">
-                {/* Logic render rieng cho video va anh */}
+                {/* KẾT HỢP: Logic render video của bạn + helper function của Hoang */}
                 {row.video_path ? (
                   <video 
-                    src={`${BASE_URL}${row.video_path}`}
+                    src={getImageUrl(row.video_path)}
                     controls 
                     className="h-20 w-32 object-cover rounded border"
                   />
                 ) : (
                   <img 
-                    src={row.panorama_image_path ? `${BASE_URL}${row.panorama_image_path}` : 'https://via.placeholder.com/150x100?text=No+Image'} 
+                    src={getImageUrl(row.panorama_image_path)} 
                     alt="Bang chung" 
                     className="h-16 w-24 object-cover rounded border"
                     onError={handleImageError}
                   />
                 )}
               </td>
-              <td className="px-4 py-4 text-center">
-                {row.status === 'Pending' && (
+              
+              <td className="px-4 py-4">
+                <div className="flex justify-center gap-2">
+                  {/* KẾT HỢP: Nút Chi tiết (Hoang) */}
                   <button 
-                    onClick={() => onConfirm(row.id)}
-                    disabled={processingId === row.id}
-                    className={`px-4 py-1.5 rounded text-sm font-medium transition text-white ${
-                      processingId === row.id 
-                        ? 'bg-gray-400 cursor-not-allowed' 
-                        : 'bg-blue-600 hover:bg-blue-700'
-                    }`}
+                    onClick={() => onViewDetail && onViewDetail(row)}
+                    className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded text-sm font-medium transition"
                   >
-                    {processingId === row.id ? 'Dang xu ly...' : 'Xac nhan'}
+                    Chi tiết
                   </button>
-                )}
+
+                  {/* KẾT HỢP: Nút Xác nhận chỉ hiện khi Pending (Hoang) + Loading state (Bạn) */}
+                  {row.status === 'Pending' && (
+                    <button 
+                      onClick={() => onConfirm(row.id)}
+                      disabled={processingId === row.id}
+                      className={`px-3 py-1.5 rounded text-sm font-medium transition text-white ${
+                        processingId === row.id 
+                          ? 'bg-gray-400 cursor-not-allowed' 
+                          : 'bg-blue-600 hover:bg-blue-700'
+                      }`}
+                    >
+                      {processingId === row.id ? 'Đang xử lý...' : 'Xác nhận'}
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
