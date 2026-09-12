@@ -88,6 +88,21 @@ const startWorker = async () => {
         channel.ack(msg);
         console.log(`[v] Đã lưu thành công dữ liệu xe ${data.license_plate} vào PostgreSQL!`);
 
+        data.id = violationId; // Trả về ID thật vừa chèn vào Database
+        data.violation_time = data.timestamp; // Đổi tên biến cho khớp chuẩn API
+
+        // ĐOẠN CODE BỔ SUNG: Gọi Webhook để Socket.io bắn sự kiện cho Frontend
+        try {
+          // Sử dụng hàm fetch (có sẵn trong Node.js từ bản 18+)
+          await fetch('http://localhost:3000/api/violations/notify-realtime', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+          });
+        } catch (fetchErr) {
+          console.error('[!] Lỗi khi gọi webhook thông báo realtime:', fetchErr.message);
+        }
+
       } catch (dbError) {
         await client.query('ROLLBACK'); // Hoàn tác toàn bộ database nếu có bất kỳ lỗi nào
         console.error(`[!] Lỗi khi lưu dữ liệu xe ${data.license_plate}:`, dbError.message);

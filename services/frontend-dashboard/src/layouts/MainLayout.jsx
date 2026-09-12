@@ -1,10 +1,51 @@
-import React from 'react';
+import React, { useContext, useEffect } from 'react';
 import { Outlet, Link } from 'react-router-dom';
 import { LayoutDashboard, AlertTriangle, Settings } from 'lucide-react';
+// 1. Import Context và thư viện Toast
+import { SocketContext } from '../App';
+import toast, { Toaster } from 'react-hot-toast';
 
 const MainLayout = () => {
+  // 2. Lấy kết nối socket từ App.jsx
+  const socket = useContext(SocketContext);
+
+  // 3. Thiết lập lắng nghe sự kiện khi Layout được render
+  useEffect(() => {
+    if (!socket) return;
+
+    // Hàm xử lý khi có dữ liệu vi phạm bắn về từ Backend
+    const handleNewViolation = (data) => {
+      // Map tên lỗi sang tiếng Việt cho thân thiện
+      const violationName = data.violation_type === 'RED_LIGHT' ? 'Vượt đèn đỏ' : 'Không đội mũ bảo hiểm';
+      
+      // Hiển thị Pop-up
+      toast.error(
+        <div>
+          <strong className="text-red-600">🚨 Phát hiện vi phạm mới!</strong>
+          <p className="text-sm mt-1">Biển số: <span className="font-bold">{data.license_plate}</span></p>
+          <p className="text-sm">Lỗi: <span className="font-semibold">{violationName}</span></p>
+        </div>,
+        { 
+          duration: 4000, // Tự động ẩn sau 4 giây
+          position: 'top-right' // Hiện ở góc trên bên phải
+        }
+      );
+    };
+
+    // Lắng nghe event 'new_violation'
+    socket.on('new_violation', handleNewViolation);
+
+    // Hủy lắng nghe khi chuyển trang để tránh lỗi bộ nhớ
+    return () => {
+      socket.off('new_violation', handleNewViolation);
+    };
+  }, [socket]);
+
   return (
     <div className="flex h-screen bg-gray-100">
+      {/* 4. Đặt thẻ Toaster ở đây để pop-up có thể hiển thị đè lên trên mọi thứ */}
+      <Toaster />
+
       <aside className="w-64 bg-gray-800 text-white flex flex-col">
         <div className="p-4 text-2xl font-bold border-b border-gray-700">
           Smart Traffic AI

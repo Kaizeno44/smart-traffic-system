@@ -379,7 +379,7 @@ def run_traffic_system(video_path):
     print(f"\n[HOÀN THÀNH] Tổng số vi phạm bắt được: {violation_count}")
 
 if __name__ == "__main__":
-    test_video = os.path.join(BASE_DIR, "dendo2.mp4")
+    test_video = os.path.join(BASE_DIR, "dendo1.mp4")
     if os.path.exists(test_video):
         run_traffic_system(test_video)
     else:

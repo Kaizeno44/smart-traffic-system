@@ -1,7 +1,11 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+// 1. [BỔ SUNG] Import thêm useContext từ React
+import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import ViolationTable from '../components/ViolationTable';
 import ViolationDetailModal from '../components/ViolationDetailModal';
 import { violationService } from '../services/violationService';
+// 2. [BỔ SUNG] Import SocketContext từ App.jsx
+import { SocketContext } from '../App'; 
+
 
 const Violations = () => {
   // --- State dữ liệu gốc ---
@@ -20,6 +24,9 @@ const Violations = () => {
   const [filterPlate, setFilterPlate] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterDate, setFilterDate] = useState('');
+
+  // 3. [BỔ SUNG] Khai báo socket
+  const socket = useContext(SocketContext);
 
   // Hàm tải dữ liệu từ API
   const fetchViolations = useCallback(async () => {
@@ -41,6 +48,40 @@ const Violations = () => {
   useEffect(() => {
     fetchViolations();
   }, [fetchViolations]);
+
+  // 4. [BỔ SUNG] Khối useEffect để lắng nghe sự kiện Socket.io
+  useEffect(() => {
+    if (!socket) return;
+
+    // Hàm xử lý khi có vi phạm mới
+    const handleRealtimeUpdate = (newData) => {
+      console.log("Nhận được vi phạm mới:", newData); // Log để kiểm tra
+      
+      // Định dạng lại newData (nếu cần) để khớp với cấu trúc bảng
+      // Ví dụ: Backend trả về 'RED_LIGHT', bảng cần 'red_light'
+      const formattedData = {
+          ...newData,
+          // 1. Chỉnh lại ID: Nếu BE không gửi ID, ta hiển thị chữ "MỚI" cho đẹp thay vì số dài
+          id: newData.id || 'MỚI 🌟', 
+          
+          // 2. Chỉnh lại Thời gian: Ưu tiên violation_time, nếu không có thì lấy timestamp của Socket
+          violation_time: newData.violation_time || newData.timestamp || new Date().toISOString(),
+          
+          status: 'Pending',
+      }
+
+      // Thêm vi phạm mới vào ĐẦU danh sách
+      setViolations((prevList) => [formattedData, ...prevList]);
+    };
+
+    // Lắng nghe sự kiện 'new_violation' từ Backend
+    socket.on('new_violation', handleRealtimeUpdate);
+
+    // Dọn dẹp listener khi component bị unmount
+    return () => {
+      socket.off('new_violation', handleRealtimeUpdate);
+    };
+  }, [socket]); // Chạy lại khi đối tượng socket thay đổi
 
   const handleConfirm = async (id) => {
     const isConfirm = window.confirm('Bạn có chắc chắn muốn xác nhận vi phạm này?');
@@ -76,7 +117,7 @@ const Violations = () => {
       const matchStatus = statusFilter === 'All' || item.status === statusFilter;
       
       // 3. Lọc biển số (Không phân biệt hoa thường)
-      const matchPlate = filterPlate === '' || item.license_plate?.toLowerCase().includes(filterPlate.toLowerCase());
+      const matchPlate = filterPlate === '' || (item.license_plate && item.license_plate.toLowerCase().includes(filterPlate.toLowerCase()));
       
       // 4. Lọc loại lỗi
       const matchType = filterType === '' || item.violation_type === filterType;
@@ -170,8 +211,8 @@ const Violations = () => {
               onChange={(e) => setFilterType(e.target.value)}
             >
               <option value="">Tất cả lỗi</option>
-              <option value="no_helmet">Không đội mũ bảo hiểm</option>
-              <option value="red_light">Vượt đèn đỏ</option>
+              <option value="NO_HELMET">Không đội mũ bảo hiểm</option>
+              <option value="RED_LIGHT">Vượt đèn đỏ</option>
             </select>
           </div>
 
