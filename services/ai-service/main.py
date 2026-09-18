@@ -5,6 +5,7 @@ import re
 import threading
 from datetime import datetime
 from ultralytics import YOLO
+import torch
 
 from core.ocr import LicensePlateOCR
 from core.red_light_logic import RedLightDetector
@@ -50,12 +51,19 @@ def is_white_helmet(crop):
     return white_ratio > 0.35
 
 def run_traffic_system(video_path):
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"--> Đang chạy AI trên: {device} ({torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'})")
     print("[1/3] Đang nạp các mô hình AI...")
-    moto_model = YOLO("yolov8n.pt")
+    # moto_model = YOLO("yolov8n.pt")
     use_yolo_fallback = True
-    helmet_model = YOLO(os.path.join(MODELS_DIR, "helmet_lp_best.pt"))
-    lp_model = YOLO(os.path.join(MODELS_DIR, "my_lp_model.pt"))
-    tl_model = YOLO("yolov8n.pt")
+    # helmet_model = YOLO(os.path.join(MODELS_DIR, "helmet_lp_best.pt"))
+    # lp_model = YOLO(os.path.join(MODELS_DIR, "my_lp_model.pt"))
+    # tl_model = YOLO("yolov8n.pt")
+    moto_model = YOLO("yolov8n.pt").to(device)
+    helmet_model = YOLO(os.path.join(MODELS_DIR, "helmet_lp_best.pt")).to(device)
+    lp_model = YOLO(os.path.join(MODELS_DIR, "my_lp_model.pt")).to(device)
+    tl_model = YOLO("yolov8n.pt").to(device)
+
 
     print("Đang nạp PaddleOCR...")
     ocr_model = LicensePlateOCR()
@@ -72,8 +80,10 @@ def run_traffic_system(video_path):
 
     bike_plates = {}
     bike_plate_confs = {}
+    bike_lp_crops = {}
     bike_recorded_violations = {}
     bike_last_seen = {}
+    recorded_plate_violations = set()  # Lưu (clean_lp, v_type) để chống phạt trùng 1 biển số xe
     frame_count = 0
 
     # Khởi tạo mô đun Đèn đỏ
@@ -93,8 +103,8 @@ def run_traffic_system(video_path):
             break
         frame_count += 1 
 
-        # Tối ưu FPS: Bỏ qua frame (chỉ xử lý 1/5 số frame)
-        if frame_count % 5 != 0: 
+        # Xử lý 1/2 số frame (GPU RTX 3050 giúp tracker bám đuôi mượt mà, không bị mất dấu ID)
+        if frame_count % 2 != 0: 
             continue
 
         annotated_frame = frame.copy()
@@ -105,8 +115,8 @@ def run_traffic_system(video_path):
         cv2.putText(annotated_frame, "Vach Kiem Tra Vi Pham", (20, threshold_y - 15), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
-        helmet_detections = analyze_frame(helmet_model, frame, conf=0.35, imgsz=1280)
-        lp_detections = analyze_frame(lp_model, frame, conf=0.45, imgsz=640) 
+        helmet_detections = analyze_frame(helmet_model, frame, conf=0.35, imgsz=640, device=device)
+        lp_detections = analyze_frame(lp_model, frame, conf=0.45, imgsz=640, device=device) 
         helmet_dets = []
         no_helmet_dets = []
         lp_dets = []
@@ -159,13 +169,13 @@ def run_traffic_system(video_path):
             cv2.putText(annotated_frame, f"NO HELMET! ({conf:.2f})", (x1, max(30, y1 - 10)), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        track_kwargs = {"persist": True, "conf": 0.15, "imgsz": 800, "iou": 0.9, "verbose": False}
+        track_kwargs = {"persist": True, "conf": 0.25, "imgsz": 640, "iou": 0.5, "tracker": "bytetrack.yaml", "verbose": False, "device": device}
         if use_yolo_fallback:
             track_kwargs["classes"] = [3] 
             
         moto_results = moto_model.track(frame, **track_kwargs)[0]
         
-        tl_results = tl_model.predict(frame, classes=[9], conf=0.15, verbose=False)[0] 
+        tl_results = tl_model.predict(frame, classes=[9], conf=0.15, device=device, verbose=False)[0] 
         traffic_light_boxes = tl_results.boxes.xyxy.cpu().numpy() if tl_results.boxes is not None else []
         
         is_red = False
@@ -222,7 +232,7 @@ def run_traffic_system(video_path):
                 
                 for lp in lp_dets:
                     lx1, ly1, lx2, ly2 = lp["bbox"]
-                    if bx1 - 30 <= lx1 and lx2 <= bx2 + 30 and by1 - 50 <= ly1 and ly2 <= by2 + 50:
+                    if bx1 - 35 <= lx1 and lx2 <= bx2 + 35 and by1 - 50 <= ly1 and ly2 <= by2 + 50:
                         lp_pad = 10
                         crop_x1 = max(0, lx1 - lp_pad)
                         crop_y1 = max(0, ly1 - lp_pad)
@@ -231,29 +241,31 @@ def run_traffic_system(video_path):
                         crop_w = crop_x2 - crop_x1
                         crop_h = crop_y2 - crop_y1
                         
-                        if crop_w >= 28 and crop_h >= 16:
+                        if crop_w >= 20 and crop_h >= 14:
                             lp_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
-                            read_str = ""
                             if lp_crop.size > 0:
-                                read_str, ocr_conf = ocr_model.read_plate(lp_crop)
+                                bike_lp_crops[bike_id] = lp_crop
                                 
-                            if read_str:
-                                clean_chars = "".join(c for c in read_str.upper() if c.isalnum())
-                                match_reversed = re.match(r'^(\d{4,5})(\d{2}[A-Z]{1,2}\d?)$', clean_chars)
-                                if match_reversed:
-                                    clean_chars = match_reversed.group(2) + match_reversed.group(1)
+                                # Bỏ qua OCR nếu xe đã nhận diện biển số chuẩn (>= 8 ký tự) để tăng tốc độ tối đa
+                                has_solid_plate = bool(current_lp_str and len(current_lp_str.replace("-", "").replace(" ", "").replace(".", "")) >= 8)
                                 
-                                if len(clean_chars) >= 8:
-                                    read_str = clean_chars[:4] + "-" + clean_chars[4:]
-                                else:
-                                    read_str = clean_chars
-                                
-                                if not current_lp_str or ("-" in read_str and "-" not in current_lp_str):
-                                    current_lp_str = read_str
-                                    bike_plates[bike_id] = read_str
-                                elif "-" in read_str and 8 <= len(read_str.replace(" ", "")) <= 10:
-                                    current_lp_str = read_str
-                                    bike_plates[bike_id] = read_str
+                                if not has_solid_plate:
+                                    read_str, ocr_conf = ocr_model.read_plate(lp_crop)
+                                    if read_str:
+                                        clean_chars = "".join(c for c in read_str.upper() if c.isalnum())
+                                        # Chỉ nhận biển số nếu độ dài >= 7 ký tự (loại bỏ hoàn toàn rác OCR như '6', '1', 'A')
+                                        if len(clean_chars) >= 7:
+                                            match_reversed = re.match(r'^(\d{4,5})(\d{2}[A-Z]{1,2}\d?)$', clean_chars)
+                                            if match_reversed:
+                                                clean_chars = match_reversed.group(2) + match_reversed.group(1)
+                                            
+                                            if len(clean_chars) >= 8:
+                                                read_str = clean_chars[:4] + "-" + clean_chars[4:]
+                                            else:
+                                                read_str = clean_chars
+                                            
+                                            current_lp_str = read_str
+                                            bike_plates[bike_id] = read_str
 
                 detected_lp_str = bike_plates.get(bike_id, "")
                 if detected_lp_str:
@@ -271,7 +283,8 @@ def run_traffic_system(video_path):
                         no_helmet_conf = nh["conf"]
                         break
 
-                is_near_threshold = (by2 >= threshold_y - 120)
+                # Chỉ kích hoạt kiểm tra khi xe đã tới gần vạch ranh giới (hoặc đã đọc được biển số rõ)
+                is_near_threshold = (by2 >= threshold_y - 40)
                 clean_lp = detected_lp_str.replace(" ", "").replace("-", "") if detected_lp_str else ""
                 has_valid_lp = len(clean_lp) >= 7
 
@@ -288,6 +301,10 @@ def run_traffic_system(video_path):
 
                 for v_type in current_violations:
                     if bike_id is not None and (is_near_threshold or has_valid_lp):
+                        # Chống phạt trùng nếu biển số này đã bị phạt lỗi này rồi (kể cả khi tracker nhảy ID)
+                        if has_valid_lp and (clean_lp, v_type) in recorded_plate_violations:
+                            continue
+
                         prev_lp_len = bike_recorded_violations[bike_id][v_type]
 
                         should_save = False
@@ -300,10 +317,56 @@ def run_traffic_system(video_path):
                             is_update_from_unknown = True
 
                         if should_save:
+                            # 1. Nhận diện biển số ngay lập tức từ ảnh cắt biển số nếu chưa có
+                            lp_crop_img = bike_lp_crops.get(bike_id, None)
+                            if not has_valid_lp:
+                                if lp_crop_img is not None and lp_crop_img.size > 0:
+                                    read_str, ocr_conf = ocr_model.read_plate(lp_crop_img)
+                                    if read_str:
+                                        clean_chars = "".join(c for c in read_str.upper() if c.isalnum())
+                                        if len(clean_chars) >= 7:
+                                            match_reversed = re.match(r'^(\d{4,5})(\d{2}[A-Z]{1,2}\d?)$', clean_chars)
+                                            if match_reversed:
+                                                clean_chars = match_reversed.group(2) + match_reversed.group(1)
+                                            if len(clean_chars) >= 8:
+                                                read_str = clean_chars[:4] + "-" + clean_chars[4:]
+                                            else:
+                                                read_str = clean_chars
+                                            detected_lp_str = read_str
+                                            bike_plates[bike_id] = read_str
+                                            clean_lp = detected_lp_str.replace(" ", "").replace("-", "")
+                                            has_valid_lp = len(clean_lp) >= 7
+                                else:
+                                    tail_y1 = max(0, by1 + int((by2 - by1) * 0.55))
+                                    tail_crop = frame[tail_y1:by2, max(0, bx1):min(w_frame, bx2)]
+                                    if tail_crop.size > 0:
+                                        read_str, ocr_conf = ocr_model.read_plate(tail_crop)
+                                        if read_str:
+                                            clean_chars = "".join(c for c in read_str.upper() if c.isalnum())
+                                            if len(clean_chars) >= 7:
+                                                match_reversed = re.match(r'^(\d{4,5})(\d{2}[A-Z]{1,2}\d?)$', clean_chars)
+                                                if match_reversed:
+                                                    clean_chars = match_reversed.group(2) + match_reversed.group(1)
+                                                if len(clean_chars) >= 8:
+                                                    read_str = clean_chars[:4] + "-" + clean_chars[4:]
+                                                else:
+                                                    read_str = clean_chars
+                                                detected_lp_str = read_str
+                                                bike_plates[bike_id] = read_str
+                                                clean_lp = detected_lp_str.replace(" ", "").replace("-", "")
+                                                has_valid_lp = len(clean_lp) >= 7
+                                                lp_crop_img = tail_crop
+
+                            # Kiểm tra lại sau khi OCR: nếu biển số này đã bị phạt lỗi này ở xe/ID khác rồi thì bỏ qua
+                            if has_valid_lp and (clean_lp, v_type) in recorded_plate_violations and not is_update_from_unknown:
+                                continue
+
                             if prev_lp_len == -1:
                                 violation_count += 1
                             
                             bike_recorded_violations[bike_id][v_type] = len(clean_lp) if has_valid_lp else 0
+                            if has_valid_lp:
+                                recorded_plate_violations.add((clean_lp, v_type))
 
                             crop_pad = 40
                             crop_y1 = max(0, expanded_y1 - crop_pad)
@@ -316,14 +379,31 @@ def run_traffic_system(video_path):
                             
                             if is_update_from_unknown:
                                 old_evidence_path = os.path.join(OUTPUT_DIR, f"violation_ID{bike_id}_{v_type}_CHUA_RO_BS.jpg")
+                                old_lp_path = os.path.join(OUTPUT_DIR, f"violation_ID{bike_id}_{v_type}_LP_CHUA_RO_BS.jpg")
                                 if os.path.exists(old_evidence_path):
                                     os.remove(old_evidence_path)
+                                if os.path.exists(old_lp_path):
+                                    os.remove(old_lp_path)
                                     
                             evidence_name = f"violation_ID{bike_id}_{v_type}_{lp_clean_file}.jpg"
                             evidence_path = os.path.join(OUTPUT_DIR, evidence_name)
                             
+                            lp_evidence_name = f"violation_ID{bike_id}_{v_type}_LP_{lp_clean_file}.jpg"
+                            lp_evidence_path = os.path.join(OUTPUT_DIR, lp_evidence_name)
+                            
                             if evidence_img.size > 0:
                                 cv2.imwrite(evidence_path, evidence_img)
+
+                            # Lưu ảnh chụp riêng của biển số xe
+                            if lp_crop_img is not None and lp_crop_img.size > 0:
+                                cv2.imwrite(lp_evidence_path, lp_crop_img)
+                            else:
+                                tail_y1 = max(0, by1 + int((by2 - by1) * 0.55))
+                                fallback_lp = frame[tail_y1:by2, max(0, bx1):min(w_frame, bx2)]
+                                if fallback_lp.size > 0:
+                                    cv2.imwrite(lp_evidence_path, fallback_lp)
+                                else:
+                                    lp_evidence_path = None
 
                             now_str = datetime.now().isoformat()
                             violation_name_vn = "VƯỢT ĐÈN ĐỎ" if v_type == "RED_LIGHT" else "KHÔNG ĐỘI MŨ BẢO HIỂM"
@@ -331,10 +411,12 @@ def run_traffic_system(video_path):
                             tag = "CẬP NHẬT BIỂN SỐ RÕ NÉT" if is_update_from_unknown else "PHÁT HIỆN VI PHẠM GIAO THÔNG"
                             print("=" * 65)
                             print(f"🚨 {tag} #{violation_count} (Xe ID: {bike_id})")
-                            print(f"-> Biển số xe  : {detected_lp_str if detected_lp_str else 'CHƯA RÕ BIỂN SỐ'}")
-                            print(f"-> Lỗi vi phạm : {violation_name_vn}")
-                            print(f"-> Thời gian   : {now_str}")
-                            print(f"-> Bằng chứng  : {evidence_path}")
+                            print(f"-> Biển số xe   : {detected_lp_str if detected_lp_str else 'CHƯA RÕ BIỂN SỐ'}")
+                            print(f"-> Lỗi vi phạm  : {violation_name_vn}")
+                            print(f"-> Thời gian    : {now_str}")
+                            print(f"-> Bằng chứng xe: {evidence_path}")
+                            if lp_evidence_path and os.path.exists(lp_evidence_path):
+                                print(f"-> Ảnh biển số  : {lp_evidence_path}")
                             print("=" * 65)
 
                             # Kích hoạt luồng gửi API
@@ -352,7 +434,8 @@ def run_traffic_system(video_path):
                                     evidence_path              # image_path
                                 ),
                                 kwargs={
-                                    "light_status": light_val  # Trạng thái đèn
+                                    "light_status": light_val,          # Trạng thái đèn
+                                    "plate_image_path": lp_evidence_path # Ảnh biển số xe riêng
                                 }
                             )
                             api_thread.start()
@@ -362,6 +445,7 @@ def run_traffic_system(video_path):
         for bid in expired_ids:
             if bid in bike_plates: del bike_plates[bid]
             if bid in bike_plate_confs: del bike_plate_confs[bid]
+            if bid in bike_lp_crops: del bike_lp_crops[bid]
             if bid in bike_recorded_violations: del bike_recorded_violations[bid]
             if bid in motor_positions_history: del motor_positions_history[bid] 
             del bike_last_seen[bid]
