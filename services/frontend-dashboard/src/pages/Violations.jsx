@@ -106,12 +106,24 @@ const Violations = () => {
       });
     };
 
+    // Video sẵn sàng (2 giây sau vi phạm)
+    const onVideoReady = (data) => {
+      console.log('🎥 violation_video_ready:', data);
+      setViolations(prev => prev.map(v =>
+        v.id === data.violation_id 
+           ? { ...v, video_path: data.video_path } 
+           : v
+      ));
+    };
+
     socket.on('new_violation', handleNewViolation);
     socket.on('violation_updated', handleViolationUpdated);
+    socket.on('violation_video_ready', onVideoReady);
 
     return () => {
       socket.off('new_violation', handleNewViolation);
       socket.off('violation_updated', handleViolationUpdated);
+      socket.off('violation_video_ready', onVideoReady);
     };
   }, [socket]);
   // ============ END SOCKET LISTENERS ============

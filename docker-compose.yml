@@ -57,6 +57,9 @@ services:
       - "5173:5173"
     environment:
       - VITE_API_URL=http://localhost:3000/api
+    volumes:
+      - ./services/frontend-dashboard:/app            # ← Mount code
+      - /app/node_modules                              # ← Giữ node_modules của container
     depends_on:
       - backend
     restart: always

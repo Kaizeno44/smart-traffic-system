@@ -1,6 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { createViolation, getViolations, updateStatus } = require('../controllers/violationController');
+const { 
+  createViolation, 
+  getViolations, 
+  updateStatus,
+  updateViolationVideo 
+} = require('../controllers/violationController');
 const upload = require('../middlewares/upload');
 
 const imageUpload = upload.fields([
@@ -12,6 +17,7 @@ const imageUpload = upload.fields([
 router.post('/', imageUpload, createViolation);
 router.get('/', getViolations);
 router.put('/:id/status', updateStatus);
+router.post('/update-video', imageUpload, updateViolationVideo);
 
 // Webhook: Worker gọi sau khi lưu DB → Socket.io bắn cho Frontend
 router.post('/notify-realtime', (req, res) => {

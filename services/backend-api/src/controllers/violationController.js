@@ -173,8 +173,72 @@ const updateStatus = async (req, res) => {
 };
 
 
+const updateViolationVideo = async (req, res) => {
+  const { vehicle_id } = req.body;   // bike_id từ AI
+  if (!vehicle_id) {
+    return res.status(400).json({ success: false, message: 'Thiếu vehicle_id' });
+  }
+  if (!req.files || !req.files['violation_video']) {
+    return res.status(400).json({ success: false, message: 'Thiếu video' });
+  }
+  const video_path = '/uploads/' + req.files['violation_video'][0].filename;
+  try {
+    // Tìm vi phạm gần nhất của xe này trong 60s qua
+    const findQuery = `
+      SELECT v.id
+      FROM Violations v
+      WHERE v.id = (
+        SELECT v2.id FROM Violations v2
+        ORDER BY v2.id DESC
+        LIMIT 1
+      )
+      OR v.id > (SELECT MAX(id) - 5 FROM Violations)
+      ORDER BY v.id DESC
+      LIMIT 1
+    `;
+    // Đơn giản hơn: cập nhật vi phạm mới nhất CHƯA có video
+    const updRes = await pool.query(`
+      UPDATE Evidences
+      SET video_path = $1
+      WHERE id = (
+        SELECT e.id FROM Evidences e
+        JOIN Violations v ON e.violation_id = v.id
+        WHERE e.video_path IS NULL
+        ORDER BY v.violation_time DESC
+        LIMIT 1
+      )
+      RETURNING id, violation_id
+    `, [video_path]);
+    if (updRes.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Không tìm thấy vi phạm cần update video' 
+      });
+    }
+    console.log(`[UpdateVideo] Đã gắn video ${video_path} vào evidence id=${updRes.rows[0].id}`);
+    // Notify frontend
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('violation_video_ready', {
+        violation_id: updRes.rows[0].violation_id,
+        video_path: video_path,
+      });
+    }
+    res.status(200).json({
+      success: true,
+      message: 'Cập nhật video thành công',
+      data: updRes.rows[0],
+    });
+  } catch (error) {
+    console.error('Lỗi update video:', error);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+};
+
+
 module.exports = {
   createViolation,
   getViolations,
-  updateStatus
+  updateStatus,
+  updateViolationVideo,   // ← THÊM
 };

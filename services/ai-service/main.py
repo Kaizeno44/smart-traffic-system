@@ -10,10 +10,11 @@ import torch
 
 from core.ocr import LicensePlateOCR
 from core.red_light_logic import RedLightDetector
-from publisher import send_violation
+from publisher import send_violation, send_violation_video_update
 from core.detection import analyze_frame
 from core.tracking import VehicleTracker
 from core.rules import is_violation, build_violation_payload
+from core.video_recorder import VideoRecorder
 
 # ================== LOGGING SETUP ==================
 # KHÔNG dùng basicConfig vì Ultralytics đã chiếm root logger từ lúc
@@ -355,6 +356,17 @@ def run_traffic_system(video_path):
     motor_positions_history = {}
     frame_count = 0
 
+    # ✅ Khởi tạo Video Recorder
+    VIDEO_DIR = os.path.join(OUTPUT_DIR, "videos")
+    os.makedirs(VIDEO_DIR, exist_ok=True)
+    video_recorder = VideoRecorder(
+        output_dir=VIDEO_DIR,
+        fps=30,
+        pre_seconds=3,    # 3 giây trước vi phạm
+        post_seconds=2,   # 2 giây sau vi phạm
+    )
+    print(f"[Recorder] Video clips sẽ lưu tại: {VIDEO_DIR}")
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -365,6 +377,22 @@ def run_traffic_system(video_path):
         # Bỏ frame lẻ để tăng tốc
         if frame_count % 2 != 0:
             continue
+
+        # ✅ Update buffer recorder mỗi frame
+        video_recorder.add_frame(frame)
+        
+        # ✅ Kiểm tra recording đã xong chưa
+        finished_clips = video_recorder.update()
+        for bike_id, video_path in finished_clips:
+            # Gửi thông tin video lên backend
+            try:
+                threading.Thread(
+                    target=send_violation_video_update,
+                    args=(bike_id, video_path),
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                logger.error(f"[Recorder] Lỗi gửi video update: {e}")
 
         annotated_frame = frame.copy()
         h_frame, w_frame, _ = frame.shape
@@ -484,7 +512,7 @@ def run_traffic_system(video_path):
                 if track_id is None:
                     continue
                 if red_light_ai.is_crossing_line(bbox, track_id,
-                                                  motor_positions_history):
+                                                 motor_positions_history):
                     if is_red:
                         red_light_violator_ids.append(track_id)
 
@@ -577,16 +605,16 @@ def run_traffic_system(video_path):
                                 logger.info(f"[LP Track] ID={bike_id} "
                                             f"cập nhật biển: {new_str}")
 
-                                retroactive_update_violation(
-                                    bike_id=bike_id,
-                                    new_plate=new_str,
-                                    lp_crop=lp_crop,
-                                    frame=frame,
-                                    bike_box=(bx1, by1, bx2, by2),
-                                    bike_recorded_violations=bike_recorded_violations,
-                                    recorded_plate_violations=recorded_plate_violations,
-                                    OUTPUT_DIR=OUTPUT_DIR,
-                                )
+                            retroactive_update_violation(
+                                bike_id=bike_id,
+                                new_plate=new_str,
+                                lp_crop=lp_crop,
+                                frame=frame,
+                                bike_box=(bx1, by1, bx2, by2),
+                                bike_recorded_violations=bike_recorded_violations,
+                                recorded_plate_violations=recorded_plate_violations,
+                                OUTPUT_DIR=OUTPUT_DIR,
+                            )
 
             detected_lp_str = bike_plates.get(bike_id, "")
             if detected_lp_str:
@@ -680,6 +708,9 @@ def run_traffic_system(video_path):
 
                 if prev_lp_len == -1:
                     violation_count += 1
+                
+                # ✅ Bắt đầu ghi video clip cho vi phạm này
+                video_recorder.start_recording(bike_id, v_type)
 
                 bike_recorded_violations[bike_id][v_type] = (
                     len(clean_lp) if has_valid_lp else 0

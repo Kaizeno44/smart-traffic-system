@@ -177,6 +177,38 @@ def send_violation(
             except Exception:
                 pass
 
+def send_violation_video_update(bike_id, video_path):
+    """
+    Gửi cập nhật video cho vi phạm đã có.
+    Gọi sau khi recorder ghi xong clip (2 giây sau vi phạm).
+    """
+    import requests
+    if not os.path.exists(video_path):
+        return False
+    
+    # Endpoint cập nhật video theo vehicle_id
+    endpoint = os.getenv(
+        "BACKEND_UPDATE_URL",
+        "http://backend:3000/api/violations/update-video"
+    )
+    
+    try:
+        with open(video_path, 'rb') as f:
+            files = {'violation_video': (os.path.basename(video_path), f, 'video/mp4')}
+            data = {'vehicle_id': str(bike_id)}
+            
+            resp = requests.post(endpoint, data=data, files=files, timeout=30)
+            
+            if 200 <= resp.status_code < 300:
+                print(f"[Publisher] ✅ Gửi video ID={bike_id} thành công (HTTP {resp.status_code})")
+                return True
+            else:
+                print(f"[Publisher] ⚠️ Server trả {resp.status_code}: {resp.text[:200]}")
+                return False
+    except Exception as e:
+        print(f"[Publisher] ❌ Lỗi gửi video ID={bike_id}: {e}")
+        return False
+
 
 # ================== SELF-TEST (chạy trực tiếp) ==================
 if __name__ == "__main__":

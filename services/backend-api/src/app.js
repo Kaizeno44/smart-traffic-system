@@ -44,7 +44,8 @@ const pool = new Pool({
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
-app.use('/uploads', express.static('public/uploads'));
+app.use('/uploads', express.static(path.join(__dirname, '../public/uploads')));
+
 
 // Khởi chạy kết nối Database và RabbitMQ
 pool.connect((err, client, release) => {

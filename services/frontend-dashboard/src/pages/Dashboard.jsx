@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useContext, useCallback } from 'react';
 import { violationService } from '../services/violationService';
 import { SocketContext } from '../App';
+import StatisticsCharts from '../components/StatisticsCharts';
+import ExportButtons from '../components/ExportButtons';
 
 const Dashboard = () => {
   const [stats, setStats] = useState({ total: 0, today: 0 });
+  const [violations, setViolations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [serverStatus, setServerStatus] = useState('Đang kết nối...');
 
@@ -13,7 +16,7 @@ const Dashboard = () => {
     try {
       const response = await violationService.getViolations();
       const dataList = response?.data?.data || response?.data || [];
-
+      
       const total = dataList.length;
       const todayStr = new Date().toISOString().split('T')[0];
       const todayCount = dataList.filter(item => {
@@ -22,6 +25,7 @@ const Dashboard = () => {
       }).length;
 
       setStats({ total, today: todayCount });
+      setViolations(dataList);
       setServerStatus('Online');
     } catch (error) {
       console.error('Lỗi khi tải dữ liệu thống kê:', error);
@@ -43,39 +47,27 @@ const Dashboard = () => {
   // ✅ Realtime update qua socket (nhanh hơn polling)
   useEffect(() => {
     if (!socket) return;
-
-    const bumpTotal = () => {
-      setStats(prev => ({ ...prev, total: prev.total + 1 }));
-      const todayStr = new Date().toISOString().split('T')[0];
-      setStats(prev => ({
-        ...prev,
-        today: prev.today + (todayStr ? 1 : 0),
-      }));
+  
+    const handleUpdate = () => {
+      // Refresh data sau 500ms
+      setTimeout(fetchDashboardStats, 500);
     };
-
-    const onNew = () => {
-      console.log('📊 Dashboard: new_violation → tăng total');
-      // Sau 1s, refetch để đồng bộ số liệu chuẩn xác
-      setTimeout(fetchDashboardStats, 1000);
-    };
-
-    const onUpdated = () => {
-      console.log('📊 Dashboard: violation_updated → không tăng total');
-      // Không tăng vì chỉ update, không phải tạo mới
-    };
-
-    socket.on('new_violation', onNew);
-    socket.on('violation_updated', onUpdated);
-
+  
+    socket.on('new_violation', handleUpdate);
+    socket.on('violation_updated', handleUpdate);
+  
     return () => {
-      socket.off('new_violation', onNew);
-      socket.off('violation_updated', onUpdated);
+      socket.off('new_violation', handleUpdate);
+      socket.off('violation_updated', handleUpdate);
     };
   }, [socket, fetchDashboardStats]);
 
   return (
     <div>
-      <h2 className="text-2xl font-bold mb-4">Tổng quan hệ thống</h2>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-3">
+        <h2 className="text-2xl font-bold">Tổng quan hệ thống</h2>
+        <ExportButtons violations={violations} stats={stats} />
+      </div>
       
       {loading && <p className="text-gray-500 mb-4 animate-pulse">Đang đồng bộ dữ liệu thời gian thực...</p>}
 
@@ -100,6 +92,13 @@ const Dashboard = () => {
             {serverStatus}
           </p>
         </div>
+      </div>
+      {/* ✅ Thêm block biểu đồ thống kê */}
+      <div className="mt-8">
+        <h2 className="text-xl font-bold text-gray-800 mb-4">
+          📊 Thống kê chi tiết
+        </h2>
+        <StatisticsCharts violations={violations} />
       </div>
     </div>
   );
