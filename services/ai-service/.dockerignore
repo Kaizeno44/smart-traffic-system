@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.env
+.git/
+.gitignore
+*.md
+*.mp4
+*.avi
+*.mkv
+.pytest_cache/
+models/
+notebooks/

@@ -1,9 +1,7 @@
-// 1. [BỔ SUNG] Import thêm useContext từ React
 import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import ViolationTable from '../components/ViolationTable';
 import ViolationDetailModal from '../components/ViolationDetailModal';
 import { violationService } from '../services/violationService';
-// 2. [BỔ SUNG] Import SocketContext từ App.jsx
 import { SocketContext } from '../App'; 
 
 
@@ -13,19 +11,19 @@ const Violations = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   
-  // --- State của bạn (Quản lý Loading & UX) ---
+  // --- State UX ---
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [processingId, setProcessingId] = useState(null); 
   
-  // --- State của Hoang (Lọc nâng cao & Popup chi tiết) ---
+  // --- State lọc nâng cao & Modal ---
   const [selectedViolation, setSelectedViolation] = useState(null);
   const [showFilter, setShowFilter] = useState(false); 
   const [filterPlate, setFilterPlate] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterDate, setFilterDate] = useState('');
 
-  // 3. [BỔ SUNG] Khai báo socket
+  // Socket
   const socket = useContext(SocketContext);
 
   // Hàm tải dữ liệu từ API
@@ -34,7 +32,6 @@ const Violations = () => {
       setLoading(true);
       setError(null);
       const response = await violationService.getViolations();
-      // Giữ cách gọi an toàn của bạn
       const dataList = response?.data?.data || response?.data || [];
       setViolations(dataList);
     } catch (err) {
@@ -49,54 +46,87 @@ const Violations = () => {
     fetchViolations();
   }, [fetchViolations]);
 
-  // 4. [BỔ SUNG] Khối useEffect để lắng nghe sự kiện Socket.io
+  // ============ SOCKET LISTENERS (FIXED) ============
   useEffect(() => {
     if (!socket) return;
 
-    // Hàm xử lý khi có vi phạm mới
-    const handleRealtimeUpdate = (newData) => {
-      console.log("Nhận được vi phạm mới:", newData); // Log để kiểm tra
-      
-      // Định dạng lại newData (nếu cần) để khớp với cấu trúc bảng
-      // Ví dụ: Backend trả về 'RED_LIGHT', bảng cần 'red_light'
-      const formattedData = {
-          ...newData,
-          // 1. Chỉnh lại ID: Nếu BE không gửi ID, ta hiển thị chữ "MỚI" cho đẹp thay vì số dài
-          id: newData.id || 'MỚI 🌟', 
-          
-          // 2. Chỉnh lại Thời gian: Ưu tiên violation_time, nếu không có thì lấy timestamp của Socket
-          violation_time: newData.violation_time || newData.timestamp || new Date().toISOString(),
-          
-          status: 'Pending',
-      }
+    // Chuẩn hoá dữ liệu từ socket về cùng format với API
+    const formatData = (raw) => ({
+      ...raw,
+      // Nếu không có id, tạo temp id duy nhất
+      id: raw.id || `TEMP_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      violation_time: raw.violation_time || raw.timestamp || new Date().toISOString(),
+      status: raw.status || 'Pending',
+      // Đảm bảo license_plate là string rỗng nếu null
+      license_plate: raw.license_plate || '',
+    });
 
-      // Thêm vi phạm mới vào ĐẦU danh sách
-      setViolations((prevList) => [formattedData, ...prevList]);
+    // Xử lý vi phạm MỚI (INSERT)
+    const handleNewViolation = (raw) => {
+      console.log('🔔 new_violation:', raw);
+      const newRecord = formatData(raw);
+
+      setViolations((prevList) => {
+        // Nếu đã có record cùng id (race condition) → update thay vì thêm
+        if (raw.id && prevList.some(v => v.id === raw.id)) {
+          return prevList.map(v =>
+            v.id === raw.id ? { ...v, ...newRecord } : v
+          );
+        }
+        return [newRecord, ...prevList];
+      });
     };
 
-    // Lắng nghe sự kiện 'new_violation' từ Backend
-    socket.on('new_violation', handleRealtimeUpdate);
+    // Xử lý vi phạm CẬP NHẬT (UPDATE — retroactive)
+    const handleViolationUpdated = (raw) => {
+      console.log('🔄 violation_updated:', raw);
+      const newRecord = formatData(raw);
 
-    // Dọn dẹp listener khi component bị unmount
+      setViolations((prevList) => {
+        const idx = prevList.findIndex(v => v.id === raw.id);
+
+        if (idx >= 0) {
+          // Cập nhật record cũ, giữ status nếu đã Confirmed
+          const updatedRecord = {
+            ...prevList[idx],
+            ...newRecord,
+            // Giữ status cũ nếu đã xác nhận (không bị reset về Pending)
+            status: prevList[idx].status === 'Confirmed'
+              ? 'Confirmed'
+              : newRecord.status,
+          };
+          const newList = [...prevList];
+          newList[idx] = updatedRecord;
+          return newList;
+        }
+
+        // Không tìm thấy (FE bị mất sync) → thêm mới
+        console.warn(`⚠️ Không tìm thấy record id=${raw.id} để update. Thêm mới.`);
+        return [newRecord, ...prevList];
+      });
+    };
+
+    socket.on('new_violation', handleNewViolation);
+    socket.on('violation_updated', handleViolationUpdated);
+
     return () => {
-      socket.off('new_violation', handleRealtimeUpdate);
+      socket.off('new_violation', handleNewViolation);
+      socket.off('violation_updated', handleViolationUpdated);
     };
-  }, [socket]); // Chạy lại khi đối tượng socket thay đổi
+  }, [socket]);
+  // ============ END SOCKET LISTENERS ============
 
   const handleConfirm = async (id) => {
     const isConfirm = window.confirm('Bạn có chắc chắn muốn xác nhận vi phạm này?');
     if (!isConfirm) return;
     try {
-      setProcessingId(id); // Vô hiệu hóa nút trong lúc gọi API (Của bạn)
-      
+      setProcessingId(id);
       await violationService.updateStatus(id, 'Confirmed');
-      
       setViolations((prevList) => 
         prevList.map((item) => 
           item.id === id ? { ...item, status: 'Confirmed' } : item
         )
       );
-      
       alert('Đã xác nhận vi phạm thành công!');
     } catch (err) {
       console.error('Update status error:', err);
@@ -106,23 +136,16 @@ const Violations = () => {
     }
   };
 
-  // KẾT HỢP BỘ LỌC: Dùng useMemo của bạn để bọc toàn bộ điều kiện lọc của cả 2
+  // Kết hợp bộ lọc
   const filteredViolations = useMemo(() => {
     return violations.filter((item) => {
-      // 1. Lọc theo search term chung (Tìm id hoặc tên nếu có)
       const matchSearch = item.name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           item.id?.toString().includes(searchTerm);
-      
-      // 2. Lọc theo trạng thái
       const matchStatus = statusFilter === 'All' || item.status === statusFilter;
-      
-      // 3. Lọc biển số (Không phân biệt hoa thường)
-      const matchPlate = filterPlate === '' || (item.license_plate && item.license_plate.toLowerCase().includes(filterPlate.toLowerCase()));
-      
-      // 4. Lọc loại lỗi
+      const matchPlate = filterPlate === '' || 
+                         (item.license_plate && item.license_plate.toLowerCase().includes(filterPlate.toLowerCase()));
       const matchType = filterType === '' || item.violation_type === filterType;
       
-      // 5. Lọc theo ngày
       let matchDate = true;
       if (filterDate) {
         const itemDate = item.violation_time?.split('T')[0];
@@ -133,7 +156,6 @@ const Violations = () => {
     });
   }, [violations, searchTerm, statusFilter, filterPlate, filterType, filterDate]);
 
-  // Nút xóa tất cả các bộ lọc
   const clearFilters = () => {
     setSearchTerm('');
     setStatusFilter('All');
@@ -149,7 +171,6 @@ const Violations = () => {
         <h2 className="text-2xl font-bold text-gray-800">Danh sách vi phạm</h2>
         
         <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
-          {/* Tìm kiếm nhanh */}
           <input 
             type="text" 
             placeholder="Tìm kiếm vi phạm..." 
@@ -165,7 +186,6 @@ const Violations = () => {
             Làm mới
           </button>
           
-          {/* Nút bật/tắt Bộ lọc nâng cao của Hoang */}
           <button 
             onClick={() => setShowFilter(!showFilter)}
             className={`${showFilter ? 'bg-gray-500' : 'bg-blue-600'} text-white px-4 py-2 rounded shadow hover:opacity-90 transition`}
@@ -175,7 +195,7 @@ const Violations = () => {
         </div>
       </div>
 
-      {/* KHUNG LỌC NÂNG CAO (Gộp Trạng thái của bạn vào đây) */}
+      {/* KHUNG LỌC NÂNG CAO */}
       {showFilter && (
         <div className="bg-white p-5 rounded-lg shadow mb-6 border border-gray-100 flex flex-wrap gap-4 items-end animate-fade-in-down">
           
@@ -245,7 +265,7 @@ const Violations = () => {
         </div>
       )}
       
-      {/* Khung hiển thị Nội dung (Giữ UI mượt của bạn, thêm prop của Hoang) */}
+      {/* Nội dung */}
       <div className="bg-white rounded-lg shadow">
         {loading ? (
           <div className="flex flex-col items-center justify-center p-12 text-gray-500">
@@ -264,13 +284,13 @@ const Violations = () => {
           <ViolationTable 
             data={filteredViolations} 
             onConfirm={handleConfirm} 
-            processingId={processingId} // Truyền ID vô hiệu hóa nút
-            onViewDetail={(row) => setSelectedViolation(row)} // Truyền hàm mở Modal
+            processingId={processingId}
+            onViewDetail={(row) => setSelectedViolation(row)}
           />
         )}
       </div>
 
-      {/* BỔ SUNG: Modal chi tiết của Hoang */}
+      {/* Modal chi tiết */}
       {selectedViolation && (
         <ViolationDetailModal 
           violation={selectedViolation} 
