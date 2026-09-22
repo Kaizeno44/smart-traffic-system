@@ -37,3 +37,6 @@ dist/
 .idea/
 .vscode/
 *.zip
+
+models/paddleocr/
+models/paddlex/

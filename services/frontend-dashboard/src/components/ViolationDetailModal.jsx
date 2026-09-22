@@ -1,76 +1,188 @@
-import React from 'react';
-import { X } from 'lucide-react';
+import React, { useEffect } from 'react';
 
-// Hàm chuẩn hóa lỗi vi phạm giống ở bảng
-const formatViolationError = (error) => {
-  const map = {
-    'no_helmet': 'KHÔNG ĐỘI MŨ BẢO HIỂM',
-    'red_light': 'VƯỢT ĐÈN ĐỎ'
-  };
-  return map[error?.toLowerCase()] || error;
-};
-
-// Hàm định dạng thời gian giống ở bảng
-const formatTime = (timeString) => {
-  if (!timeString) return '';
-  const date = new Date(timeString);
-  const time = date.toLocaleTimeString('vi-VN', { hour12: false }); 
-  const day = date.toLocaleDateString('vi-VN');
-  return `${time} ${day}`;
-};
-
-// Đã sửa lại Props cho khớp với file Violations.jsx
 const ViolationDetailModal = ({ violation, onClose }) => {
+  // Đóng modal khi nhấn ESC
+  useEffect(() => {
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleEsc);
+    document.body.style.overflow = 'hidden';   // Ngăn scroll body
+    
+    return () => {
+      window.removeEventListener('keydown', handleEsc);
+      document.body.style.overflow = 'unset';
+    };
+  }, [onClose]);
+
   if (!violation) return null;
 
-  // Xử lý link ảnh giống hệt như ở bảng
-  const BASE_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:3000';
-  const getImageUrl = (path) => {
-    if (!path) return 'https://via.placeholder.com/600x400?text=No+Image';
-    const cleanPath = path.startsWith('/') ? path.substring(1) : path;
-    return `${BASE_URL}/${cleanPath}`;
+  // Format helper
+  const formatTime = (iso) => {
+    if (!iso) return 'N/A';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString('vi-VN');
+    } catch {
+      return iso;
+    }
   };
 
+  const violationNameVN = violation.violation_type === 'RED_LIGHT'
+    ? 'VƯỢT ĐÈN ĐỎ'
+    : violation.violation_type === 'NO_HELMET'
+      ? 'KHÔNG ĐỘI MŨ BẢO HIỂM'
+      : violation.violation_type;
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg w-full max-w-2xl p-6 relative">
-        <button 
-          onClick={onClose}
-          className="absolute top-4 right-4 text-gray-500 hover:text-gray-800"
-        >
-          <X size={24} />
-        </button>
-        
-        <h3 className="text-xl font-bold mb-4 border-b pb-2">Chi tiết vi phạm #{violation.id}</h3>
-        
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <div>
-            <p className="text-gray-500 text-sm">Biển số xe</p>
-            <p className="font-bold text-lg text-red-600">{violation.license_plate}</p>
-          </div>
-          <div>
-            <p className="text-gray-500 text-sm">Thời gian</p>
-            <p className="font-semibold">{formatTime(violation.violation_time)}</p>
-          </div>
-          <div className="col-span-2">
-            <p className="text-gray-500 text-sm">Loại lỗi</p>
-            <p className="font-semibold text-red-600">
-              {formatViolationError(violation.violation_type)}
-            </p>
-          </div>
+    // Overlay
+    <div
+      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      {/* Modal box — có scroll */}
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* ===== HEADER ===== */}
+        <div className="flex justify-between items-center p-4 border-b bg-gray-50 rounded-t-lg">
+          <h2 className="text-xl font-bold text-gray-800">
+            Chi tiết vi phạm #{violation.id}
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-200 transition"
+            aria-label="Đóng"
+          >
+            ×
+          </button>
         </div>
 
-        <div>
-          <p className="text-gray-500 text-sm mb-2">Ảnh bằng chứng</p>
-          <div className="bg-gray-100 rounded overflow-hidden flex items-center justify-center border">
-            {/* Đã thay Mockup bằng thẻ ảnh thật */}
-            <img 
-              src={getImageUrl(violation.panorama_image_path)} 
-              alt="Bằng chứng vi phạm" 
-              className="w-full h-auto object-contain max-h-[400px]"
-              onError={(e) => { e.target.src = 'https://via.placeholder.com/600x400?text=Lỗi+ảnh' }}
-            />
+        {/* ===== BODY (scrollable) ===== */}
+        <div className="p-5 overflow-y-auto flex-1">
+          {/* Info grid */}
+          <div className="grid grid-cols-2 gap-4 mb-5">
+            <div>
+              <p className="text-sm text-gray-500 mb-1">Biển số xe</p>
+              <p className="text-lg font-bold text-red-600">
+                {violation.license_plate || 'CHƯA RÕ BIỂN SỐ'}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500 mb-1">Thời gian</p>
+              <p className="text-base font-medium text-gray-800">
+                {formatTime(violation.violation_time)}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500 mb-1">Loại lỗi</p>
+              <p className="text-base font-semibold text-red-600">
+                {violationNameVN}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500 mb-1">Trạng thái</p>
+              <span
+                className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${
+                  violation.status === 'Confirmed'
+                    ? 'bg-green-100 text-green-700'
+                    : 'bg-yellow-100 text-yellow-700'
+                }`}
+              >
+                {violation.status === 'Confirmed' ? 'Đã xác nhận' : 'Chờ xử lý'}
+              </span>
+            </div>
           </div>
+
+          {/* ===== VIDEO ===== */}
+          {violation.video_path && (
+            <div className="mb-5">
+              <p className="text-sm font-medium text-gray-700 mb-2">
+                🎥 Video vi phạm
+              </p>
+              <div className="bg-black rounded-lg overflow-hidden flex justify-center">
+                <video
+                  controls
+                  preload="metadata"
+                  playsInline
+                  className="w-full h-auto"
+                  style={{
+                    maxHeight: '320px',
+                    objectFit: 'contain',
+                  }}
+                >
+                  <source
+                    src={`http://localhost:3000${violation.video_path}`}
+                    type="video/mp4"
+                  />
+                  Trình duyệt không hỗ trợ video.
+                </video>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Video ghi tự động 5 giây quanh thời điểm vi phạm
+              </p>
+            </div>
+          )}
+
+          {/* ===== ẢNH PANORAMA ===== */}
+          {violation.panorama_image_path && (
+            <div className="mb-5">
+              <p className="text-sm font-medium text-gray-700 mb-2">
+                📸 Ảnh toàn cảnh
+              </p>
+              <div className="bg-gray-100 rounded-lg overflow-hidden flex justify-center">
+                <img
+                  src={`http://localhost:3000${violation.panorama_image_path}`}
+                  alt="Ảnh toàn cảnh"
+                  className="w-full h-auto"
+                  style={{
+                    maxHeight: '320px',
+                    objectFit: 'contain',
+                  }}
+                  onError={(e) => {
+                    e.target.style.display = 'none';
+                    console.error('Lỗi load ảnh panorama:', violation.panorama_image_path);
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ===== ẢNH BIỂN SỐ ===== */}
+          {violation.license_plate_image_path && (
+            <div className="mb-5">
+              <p className="text-sm font-medium text-gray-700 mb-2">
+                🔍 Ảnh biển số
+              </p>
+              <div className="bg-gray-100 rounded-lg overflow-hidden flex justify-center">
+                <img
+                  src={`http://localhost:3000${violation.license_plate_image_path}`}
+                  alt="Ảnh biển số"
+                  className="w-auto h-auto"
+                  style={{
+                    maxHeight: '180px',
+                    maxWidth: '100%',
+                    objectFit: 'contain',
+                  }}
+                  onError={(e) => {
+                    e.target.style.display = 'none';
+                    console.error('Lỗi load ảnh LP:', violation.license_plate_image_path);
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ===== FOOTER ===== */}
+        <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-lg">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition font-medium"
+          >
+            Đóng
+          </button>
         </div>
       </div>
     </div>

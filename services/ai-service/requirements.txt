@@ -1,6 +1,17 @@
-ultralytics
-opencv-python
-numpy
-pika
-easyocr
+# --- Vision / AI ---
+ultralytics>=8.2.0
+numpy<2.0.0,>=1.24.0
+
+# --- OCR (PIN PaddlePaddle 2.6.2 — bản thấp nhất còn support Python 3.9) ---
+paddleocr==2.7.3
+paddlepaddle==2.6.2
+
+# --- Messaging ---
+pika>=1.3.0
+
+# --- Tracking ---
 sort-track
+lap>=0.5.12
+
+# --- Utils ---
+packaging>=21.0

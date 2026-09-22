@@ -1,6 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { createViolation, getViolations, updateStatus } = require('../controllers/violationController');
+const { 
+  createViolation, 
+  getViolations, 
+  updateStatus,
+  updateViolationVideo 
+} = require('../controllers/violationController');
 const upload = require('../middlewares/upload');
 
 const imageUpload = upload.fields([
@@ -11,16 +16,19 @@ const imageUpload = upload.fields([
 
 router.post('/', imageUpload, createViolation);
 router.get('/', getViolations);
-
-// Route cap nhat trang thai (PUT)
 router.put('/:id/status', updateStatus);
+router.post('/update-video', imageUpload, updateViolationVideo);
 
-// Route noi bo de Consumer goi khi luu xong vao Database (Webhook Socket.io)
+// Webhook: Worker gọi sau khi lưu DB → Socket.io bắn cho Frontend
 router.post('/notify-realtime', (req, res) => {
   const io = req.app.get('io');
   if (io) {
-    io.emit('new_violation', req.body);
-    console.log(`[Socket] Da phat song vi pham cua xe ${req.body.license_plate} len Frontend`);
+    // Ưu tiên event name do worker chỉ định
+    const eventName = req.body.event || 'new_violation';
+    io.emit(eventName, req.body);
+    console.log(
+      `[Socket] Đã phát sự kiện '${eventName}' cho xe ${req.body.license_plate}`
+    );
   }
   res.status(200).json({ success: true });
 });
