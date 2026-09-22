@@ -1,45 +1,47 @@
-// 1. [BỔ SUNG] Import thêm useContext từ React
 import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
 import ViolationTable from '../components/ViolationTable';
 import ViolationDetailModal from '../components/ViolationDetailModal';
 import { violationService } from '../services/violationService';
-// 2. [BỔ SUNG] Import SocketContext từ App.jsx
-import { SocketContext } from '../App'; 
+import { SocketContext } from '../App';
+import { useLocalStorage } from '../hooks/useLocalStorage';
 
 
 const Violations = () => {
-  // --- State dữ liệu gốc ---
+  // --- State dữ liệu ---
   const [violations, setViolations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  
-  // --- State của bạn (Quản lý Loading & UX) ---
-  const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('All');
-  const [processingId, setProcessingId] = useState(null); 
-  
-  // --- State của Hoang (Lọc nâng cao & Popup chi tiết) ---
-  const [selectedViolation, setSelectedViolation] = useState(null);
-  const [showFilter, setShowFilter] = useState(false); 
-  const [filterPlate, setFilterPlate] = useState('');
-  const [filterType, setFilterType] = useState('');
-  const [filterDate, setFilterDate] = useState('');
 
-  // 3. [BỔ SUNG] Khai báo socket
+  // --- State filter (lưu vào localStorage) ---
+  const [searchTerm, setSearchTerm] = useLocalStorage('filter_search', '');
+  const [statusFilter, setStatusFilter] = useLocalStorage('filter_status', 'All');
+  const [filterPlate, setFilterPlate] = useLocalStorage('filter_plate', '');
+  const [filterType, setFilterType] = useLocalStorage('filter_type', '');
+  const [filterDateFrom, setFilterDateFrom] = useLocalStorage('filter_date_from', '');
+  const [filterDateTo, setFilterDateTo] = useLocalStorage('filter_date_to', '');
+
+  // --- State UI ---
+  const [showFilter, setShowFilter] = useState(false);
+  const [selectedViolation, setSelectedViolation] = useState(null);
+  const [processingId, setProcessingId] = useState(null);
+
+  // --- State sort ---
+  const [sortBy, setSortBy] = useLocalStorage('sort_by', 'violation_time');
+  const [sortOrder, setSortOrder] = useLocalStorage('sort_order', 'desc');
+
   const socket = useContext(SocketContext);
 
-  // Hàm tải dữ liệu từ API
+  // ============ FETCH DATA ============
   const fetchViolations = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       const response = await violationService.getViolations();
-      // Giữ cách gọi an toàn của bạn
       const dataList = response?.data?.data || response?.data || [];
       setViolations(dataList);
     } catch (err) {
       console.error('Fetch violations error:', err);
-      setError(err?.response?.data?.message || 'Không thể tải dữ liệu vi phạm từ server. Vui lòng kiểm tra kết nối.');
+      setError(err?.response?.data?.message || 'Không thể tải dữ liệu vi phạm.');
     } finally {
       setLoading(false);
     }
@@ -49,193 +51,355 @@ const Violations = () => {
     fetchViolations();
   }, [fetchViolations]);
 
-  // 4. [BỔ SUNG] Khối useEffect để lắng nghe sự kiện Socket.io
+  // ============ SOCKET LISTENERS ============
   useEffect(() => {
     if (!socket) return;
 
-    // Hàm xử lý khi có vi phạm mới
-    const handleRealtimeUpdate = (newData) => {
-      console.log("Nhận được vi phạm mới:", newData); // Log để kiểm tra
-      
-      // Định dạng lại newData (nếu cần) để khớp với cấu trúc bảng
-      // Ví dụ: Backend trả về 'RED_LIGHT', bảng cần 'red_light'
-      const formattedData = {
-          ...newData,
-          // 1. Chỉnh lại ID: Nếu BE không gửi ID, ta hiển thị chữ "MỚI" cho đẹp thay vì số dài
-          id: newData.id || 'MỚI 🌟', 
-          
-          // 2. Chỉnh lại Thời gian: Ưu tiên violation_time, nếu không có thì lấy timestamp của Socket
-          violation_time: newData.violation_time || newData.timestamp || new Date().toISOString(),
-          
-          status: 'Pending',
-      }
+    const formatData = (raw) => ({
+      ...raw,
+      id: raw.id || `TEMP_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      violation_time: raw.violation_time || raw.timestamp || new Date().toISOString(),
+      status: raw.status || 'Pending',
+      license_plate: raw.license_plate || '',
+    });
 
-      // Thêm vi phạm mới vào ĐẦU danh sách
-      setViolations((prevList) => [formattedData, ...prevList]);
+    const handleNewViolation = (raw) => {
+      console.log('🔔 new_violation:', raw);
+      const newRecord = formatData(raw);
+      setViolations((prevList) => {
+        if (raw.id && prevList.some(v => v.id === raw.id)) {
+          return prevList.map(v => v.id === raw.id ? { ...v, ...newRecord } : v);
+        }
+        return [newRecord, ...prevList];
+      });
     };
 
-    // Lắng nghe sự kiện 'new_violation' từ Backend
-    socket.on('new_violation', handleRealtimeUpdate);
+    const handleViolationUpdated = (raw) => {
+      console.log('🔄 violation_updated:', raw);
+      const newRecord = formatData(raw);
+      setViolations((prevList) => {
+        const idx = prevList.findIndex(v => v.id === raw.id);
+        if (idx >= 0) {
+          const updated = {
+            ...prevList[idx],
+            ...newRecord,
+            status: prevList[idx].status === 'Confirmed' ? 'Confirmed' : newRecord.status,
+          };
+          const newList = [...prevList];
+          newList[idx] = updated;
+          return newList;
+        }
+        return [newRecord, ...prevList];
+      });
+    };
 
-    // Dọn dẹp listener khi component bị unmount
+    const handleVideoReady = (data) => {
+      console.log('🎥 violation_video_ready:', data);
+      setViolations(prev => prev.map(v =>
+        v.id === data.violation_id ? { ...v, video_path: data.video_path } : v
+      ));
+    };
+
+    socket.on('new_violation', handleNewViolation);
+    socket.on('violation_updated', handleViolationUpdated);
+    socket.on('violation_video_ready', handleVideoReady);
+
     return () => {
-      socket.off('new_violation', handleRealtimeUpdate);
+      socket.off('new_violation', handleNewViolation);
+      socket.off('violation_updated', handleViolationUpdated);
+      socket.off('violation_video_ready', handleVideoReady);
     };
-  }, [socket]); // Chạy lại khi đối tượng socket thay đổi
+  }, [socket]);
 
+  // ============ ACTIONS ============
   const handleConfirm = async (id) => {
     const isConfirm = window.confirm('Bạn có chắc chắn muốn xác nhận vi phạm này?');
     if (!isConfirm) return;
     try {
-      setProcessingId(id); // Vô hiệu hóa nút trong lúc gọi API (Của bạn)
-      
+      setProcessingId(id);
       await violationService.updateStatus(id, 'Confirmed');
-      
-      setViolations((prevList) => 
-        prevList.map((item) => 
-          item.id === id ? { ...item, status: 'Confirmed' } : item
-        )
+      setViolations(prevList =>
+        prevList.map(item => item.id === id ? { ...item, status: 'Confirmed' } : item)
       );
-      
       alert('Đã xác nhận vi phạm thành công!');
     } catch (err) {
       console.error('Update status error:', err);
-      alert(err?.response?.data?.message || 'Có lỗi xảy ra khi xác nhận vi phạm. Vui lòng thử lại.');
+      alert(err?.response?.data?.message || 'Có lỗi xảy ra khi xác nhận vi phạm.');
     } finally {
       setProcessingId(null);
     }
   };
 
-  // KẾT HỢP BỘ LỌC: Dùng useMemo của bạn để bọc toàn bộ điều kiện lọc của cả 2
+  // ============ FILTER + SORT LOGIC ============
   const filteredViolations = useMemo(() => {
-    return violations.filter((item) => {
-      // 1. Lọc theo search term chung (Tìm id hoặc tên nếu có)
-      const matchSearch = item.name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          item.id?.toString().includes(searchTerm);
-      
-      // 2. Lọc theo trạng thái
+    // 1. Lọc
+    const filtered = violations.filter((item) => {
+      const matchSearch =
+        item.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        item.id?.toString().includes(searchTerm);
+
       const matchStatus = statusFilter === 'All' || item.status === statusFilter;
-      
-      // 3. Lọc biển số (Không phân biệt hoa thường)
-      const matchPlate = filterPlate === '' || (item.license_plate && item.license_plate.toLowerCase().includes(filterPlate.toLowerCase()));
-      
-      // 4. Lọc loại lỗi
+
+      const matchPlate =
+        filterPlate === '' ||
+        (item.license_plate &&
+          item.license_plate.toLowerCase().includes(filterPlate.toLowerCase()));
+
       const matchType = filterType === '' || item.violation_type === filterType;
-      
-      // 5. Lọc theo ngày
+
+      // Date range filter
       let matchDate = true;
-      if (filterDate) {
-        const itemDate = item.violation_time?.split('T')[0];
-        matchDate = itemDate === filterDate;
+      if (filterDateFrom || filterDateTo) {
+        const itemDateStr = item.violation_time?.split('T')[0];
+        if (itemDateStr) {
+          if (filterDateFrom && itemDateStr < filterDateFrom) matchDate = false;
+          if (filterDateTo && itemDateStr > filterDateTo) matchDate = false;
+        } else {
+          matchDate = false;
+        }
       }
 
       return matchSearch && matchStatus && matchPlate && matchType && matchDate;
     });
-  }, [violations, searchTerm, statusFilter, filterPlate, filterType, filterDate]);
 
-  // Nút xóa tất cả các bộ lọc
+    // 2. Sort
+    const sorted = [...filtered].sort((a, b) => {
+      let aVal, bVal;
+
+      switch (sortBy) {
+        case 'license_plate':
+          aVal = a.license_plate || '';
+          bVal = b.license_plate || '';
+          break;
+        case 'violation_type':
+          aVal = a.violation_type || '';
+          bVal = b.violation_type || '';
+          break;
+        case 'status':
+          aVal = a.status || '';
+          bVal = b.status || '';
+          break;
+        case 'violation_time':
+        default:
+          aVal = new Date(a.violation_time || 0).getTime();
+          bVal = new Date(b.violation_time || 0).getTime();
+          break;
+      }
+
+      if (aVal < bVal) return sortOrder === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    return sorted;
+  }, [violations, searchTerm, statusFilter, filterPlate, filterType,
+      filterDateFrom, filterDateTo, sortBy, sortOrder]);
+
+  // ============ HELPERS ============
   const clearFilters = () => {
     setSearchTerm('');
     setStatusFilter('All');
     setFilterPlate('');
     setFilterType('');
-    setFilterDate('');
+    setFilterDateFrom('');
+    setFilterDateTo('');
   };
 
+  // Đếm số filter đang active
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (searchTerm) count++;
+    if (statusFilter && statusFilter !== 'All') count++;
+    if (filterPlate) count++;
+    if (filterType) count++;
+    if (filterDateFrom) count++;
+    if (filterDateTo) count++;
+    return count;
+  }, [searchTerm, statusFilter, filterPlate, filterType, filterDateFrom, filterDateTo]);
+
+  // Toggle sort khi click header
+  const handleSort = (columnKey) => {
+    if (sortBy === columnKey) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(columnKey);
+      setSortOrder('desc');
+    }
+  };
+
+  // ============ RENDER ============
   return (
     <div className="p-4 md:p-6">
-      {/* Header & Controls */}
+      {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-        <h2 className="text-2xl font-bold text-gray-800">Danh sách vi phạm</h2>
-        
+        <div>
+          <h2 className="text-2xl font-bold text-gray-800">Danh sách vi phạm</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Hiển thị <b>{filteredViolations.length}</b> / {violations.length} vi phạm
+          </p>
+        </div>
+
         <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
-          {/* Tìm kiếm nhanh */}
-          <input 
-            type="text" 
-            placeholder="Tìm kiếm vi phạm..." 
-            className="px-4 py-2 border rounded shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-          <button 
+          {/* Search */}
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Tìm kiếm..."
+              className="px-4 py-2 pr-10 border rounded shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-64"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          {/* Refresh */}
+          <button
             onClick={fetchViolations}
             className="bg-gray-100 text-gray-700 px-4 py-2 rounded border shadow-sm hover:bg-gray-200 transition"
             title="Làm mới dữ liệu"
           >
-            Làm mới
+            🔄 Làm mới
           </button>
-          
-          {/* Nút bật/tắt Bộ lọc nâng cao của Hoang */}
-          <button 
+
+          {/* Filter toggle */}
+          <button
             onClick={() => setShowFilter(!showFilter)}
-            className={`${showFilter ? 'bg-gray-500' : 'bg-blue-600'} text-white px-4 py-2 rounded shadow hover:opacity-90 transition`}
+            className={`${
+              showFilter ? 'bg-gray-500' : 'bg-blue-600'
+            } text-white px-4 py-2 rounded shadow hover:opacity-90 transition relative`}
           >
             {showFilter ? 'Đóng bộ lọc' : 'Bộ lọc nâng cao'}
+            {activeFilterCount > 0 && (
+              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
+                {activeFilterCount}
+              </span>
+            )}
           </button>
         </div>
       </div>
 
-      {/* KHUNG LỌC NÂNG CAO (Gộp Trạng thái của bạn vào đây) */}
+      {/* Filter Panel */}
       {showFilter && (
-        <div className="bg-white p-5 rounded-lg shadow mb-6 border border-gray-100 flex flex-wrap gap-4 items-end animate-fade-in-down">
-          
-          <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Trạng thái</label>
-            <select 
-              className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-            >
-              <option value="All">Tất cả</option>
-              <option value="Pending">Chờ xử lý</option>
-              <option value="Confirmed">Đã xác nhận</option>
-            </select>
+        <div className="bg-white p-5 rounded-lg shadow mb-6 border border-gray-100">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-semibold text-gray-700">🔍 Bộ lọc nâng cao</h3>
+            {activeFilterCount > 0 && (
+              <button
+                onClick={clearFilters}
+                className="text-sm text-red-500 hover:text-red-700 font-medium"
+              >
+                ✕ Xoá tất cả ({activeFilterCount})
+              </button>
+            )}
           </div>
 
-          <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Biển số xe</label>
-            <input 
-              type="text" 
-              placeholder="VD: 29AE..." 
-              className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={filterPlate}
-              onChange={(e) => setFilterPlate(e.target.value)}
-            />
-          </div>
-          
-          <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Loại vi phạm</label>
-            <select 
-              className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value)}
-            >
-              <option value="">Tất cả lỗi</option>
-              <option value="NO_HELMET">Không đội mũ bảo hiểm</option>
-              <option value="RED_LIGHT">Vượt đèn đỏ</option>
-            </select>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Status */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Trạng thái
+              </label>
+              <select
+                className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+              >
+                <option value="All">Tất cả</option>
+                <option value="Pending">Chờ xử lý</option>
+                <option value="Confirmed">Đã xác nhận</option>
+              </select>
+            </div>
+
+            {/* Plate */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Biển số xe
+              </label>
+              <input
+                type="text"
+                placeholder="VD: 29AE..."
+                className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={filterPlate}
+                onChange={(e) => setFilterPlate(e.target.value)}
+              />
+            </div>
+
+            {/* Type */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Loại vi phạm
+              </label>
+              <select
+                className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+              >
+                <option value="">Tất cả lỗi</option>
+                <option value="NO_HELMET">Không đội mũ bảo hiểm</option>
+                <option value="RED_LIGHT">Vượt đèn đỏ</option>
+              </select>
+            </div>
+
+            {/* Sort */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Sắp xếp theo
+              </label>
+              <select
+                className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={`${sortBy}_${sortOrder}`}
+                onChange={(e) => {
+                  const [by, order] = e.target.value.split('_');
+                  setSortBy(by);
+                  setSortOrder(order);
+                }}
+              >
+                <option value="violation_time_desc">Thời gian (mới → cũ)</option>
+                <option value="violation_time_asc">Thời gian (cũ → mới)</option>
+                <option value="license_plate_asc">Biển số (A → Z)</option>
+                <option value="license_plate_desc">Biển số (Z → A)</option>
+                <option value="violation_type_asc">Loại (A → Z)</option>
+                <option value="status_asc">Trạng thái</option>
+              </select>
+            </div>
           </div>
 
-          <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Ngày vi phạm</label>
-            <input 
-              type="date" 
-              className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={filterDate}
-              onChange={(e) => setFilterDate(e.target.value)}
-            />
+          {/* Date Range */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                📅 Từ ngày
+              </label>
+              <input
+                type="date"
+                className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                📅 Đến ngày
+              </label>
+              <input
+                type="date"
+                className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+              />
+            </div>
           </div>
-
-          <button 
-            onClick={clearFilters}
-            className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded transition border border-gray-300 h-[42px]"
-          >
-            Xóa lọc
-          </button>
         </div>
       )}
 
-      {/* Thông báo Lỗi */}
+      {/* Error */}
       {error && (
         <div className="bg-red-50 border-l-4 border-red-500 text-red-700 p-4 rounded mb-6 flex justify-between items-center">
           <p>{error}</p>
@@ -244,8 +408,8 @@ const Violations = () => {
           </button>
         </div>
       )}
-      
-      {/* Khung hiển thị Nội dung (Giữ UI mượt của bạn, thêm prop của Hoang) */}
+
+      {/* Table */}
       <div className="bg-white rounded-lg shadow">
         {loading ? (
           <div className="flex flex-col items-center justify-center p-12 text-gray-500">
@@ -253,28 +417,43 @@ const Violations = () => {
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <p className="font-medium">Đang tải dữ liệu từ máy chủ...</p>
+            <p className="font-medium">Đang tải dữ liệu...</p>
           </div>
         ) : filteredViolations.length === 0 ? (
           <div className="flex flex-col items-center justify-center p-12 text-gray-500">
             <p className="text-lg font-medium mb-2">Không tìm thấy vi phạm nào.</p>
-            <p className="text-sm">Hãy thử thay đổi bộ lọc hoặc từ khóa tìm kiếm.</p>
+            <p className="text-sm">
+              {activeFilterCount > 0
+                ? 'Hãy thử xoá bớt bộ lọc.'
+                : 'Chạy video để bắt đầu thu thập dữ liệu.'}
+            </p>
+            {activeFilterCount > 0 && (
+              <button
+                onClick={clearFilters}
+                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
+              >
+                Xoá tất cả bộ lọc
+              </button>
+            )}
           </div>
         ) : (
-          <ViolationTable 
-            data={filteredViolations} 
-            onConfirm={handleConfirm} 
-            processingId={processingId} // Truyền ID vô hiệu hóa nút
-            onViewDetail={(row) => setSelectedViolation(row)} // Truyền hàm mở Modal
+          <ViolationTable
+            data={filteredViolations}
+            onConfirm={handleConfirm}
+            processingId={processingId}
+            onViewDetail={(row) => setSelectedViolation(row)}
+            onSort={handleSort}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
           />
         )}
       </div>
 
-      {/* BỔ SUNG: Modal chi tiết của Hoang */}
+      {/* Detail Modal */}
       {selectedViolation && (
-        <ViolationDetailModal 
-          violation={selectedViolation} 
-          onClose={() => setSelectedViolation(null)} 
+        <ViolationDetailModal
+          violation={selectedViolation}
+          onClose={() => setSelectedViolation(null)}
         />
       )}
     </div>

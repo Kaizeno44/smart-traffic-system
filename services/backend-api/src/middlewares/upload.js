@@ -1,11 +1,15 @@
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 
-// Cấu hình vị trí lưu và cách đặt tên file
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
+    const dir = 'public/uploads/';
+    if (!fs.existsSync(dir)){
+        fs.mkdirSync(dir, { recursive: true });
+    }
     // Chỉ định thư mục lưu file
-    cb(null, 'public/uploads/'); 
+    cb(null, dir); 
   },
   filename: function (req, file, cb) {
     // Đặt tên file mới gồm: timestamp + số ngẫu nhiên + đuôi file gốc (.jpg, .png...)

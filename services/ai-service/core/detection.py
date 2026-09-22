@@ -23,15 +23,15 @@ def detect_motorbikes(moto_model, frame, screen_threshold_y=0.2):
     return passed_bikes, thresh_y
 
 
-def analyze_frame(model, frame, conf=0.22, imgsz=1280):
+def analyze_frame(model, frame, conf=0.22, imgsz=1280, device=None):
     """
     Phát hiện đối tượng (Mũ bảo hiểm hoặc Biển số) trên toàn bộ khung hình.
     Đã đổi tên biến thành 'model' cho tổng quát và dùng .predict() để tăng tối đa FPS.
     """
-    results = model.predict(frame, conf=conf, imgsz=imgsz, verbose=False)[0]
+    results = model.predict(frame, conf=conf, imgsz=imgsz, device=device, verbose=False)[0]
     detections = []
 
-    if results.boxes is not None:
+    if results.boxes is not None:   
         boxes = results.boxes.xyxy.cpu().numpy()
         clss = results.boxes.cls.cpu().numpy()
         confs = results.boxes.conf.cpu().numpy()
