@@ -19,6 +19,8 @@ from core.video_recorder import VideoRecorder
 
 # ================== LOGGING SETUP ==================
 import sys
+import time
+import glob
 
 
 def setup_logger(name: str, level=logging.INFO) -> logging.Logger:
@@ -57,7 +59,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Ngưỡng phát hiện
 LP_CONF_THRESHOLD = 0.50
 HELMET_CONF_THRESHOLD = 0.35
-NO_HELMET_CONF_THRESHOLD = 0.60
+NO_HELMET_CONF_THRESHOLD = 0.70
 TL_CONF_THRESHOLD = 0.15
 MOTO_TRACK_CONF = 0.25
 
@@ -513,18 +515,9 @@ def run_traffic_system(video_path):
                 max(0, x1):min(w_frame, x2)
             ]
             
-            # ✅ DEBUG: Tính skin_ratio thực tế
-            skin_ratio = 0.0
-            if head_crop.size > 0:
-                hsv_crop = cv2.cvtColor(head_crop, cv2.COLOR_BGR2HSV)
-                hc, sc, vc = hsv_crop[:, :, 0], hsv_crop[:, :, 1], hsv_crop[:, :, 2]
-                tot = head_crop.shape[0] * head_crop.shape[1]
-                m1 = (hc >= 0) & (hc <= 35) & (sc >= 20) & (sc <= 180) & (vc >= 40)
-                m2 = (hc >= 160) & (hc <= 180) & (sc >= 20) & (sc <= 180) & (vc >= 40)
-                m3 = (vc > 200) & (sc > 10) & (sc < 100)
-                skin_ratio = np.sum(m1 | m2 | m3) / float(tot + 1e-5)
-            
             if not has_skin_tone_pixels(head_crop, threshold=0.15):
+                logger.info(f"  [SKIN FILTER] Reject no_helmet: "
+                            f"conf={conf:.2f}")
                 continue
 
             no_helmet_dets.append(nh)
@@ -903,6 +896,121 @@ def run_traffic_system(video_path):
     logger.info(f"[HOÀN THÀNH] Tổng số vi phạm bắt được: {violation_count}")
 
 
+# ================== AUTO VIDEO DISCOVERY + WATCHER ==================
+
+def find_all_videos(video_dir):
+    """Tìm tất cả video trong folder."""
+    if not os.path.isdir(video_dir):
+        os.makedirs(video_dir, exist_ok=True)
+        return []
+        
+    extensions = ('.mp4', '.avi', '.mkv', '.mov', '.webm')
+    videos = []
+    for f in os.listdir(video_dir):
+        full_path = os.path.join(video_dir, f)
+        if os.path.isfile(full_path) and f.lower().endswith(extensions):
+            videos.append(full_path)
+    return sorted(videos)
+
+
+def process_single_video(video_path):
+    """Xử lý 1 video + đánh dấu đã xử lý."""
+    base_name = os.path.basename(video_path)
+    name, ext = os.path.splitext(base_name)
+    
+    # Đánh dấu đang xử lý
+    processing_path = os.path.join(
+        os.path.dirname(video_path),
+        f".processing_{name}{ext}"
+    )
+    
+    try:
+        # Đổi tên đánh dấu
+        os.rename(video_path, processing_path)
+        logger.info(f"\n{'='*70}")
+        logger.info(f"🎬 BẮT ĐẦU XỬ LÝ: {base_name}")
+        logger.info(f"{'='*70}")
+        
+        run_traffic_system(processing_path)
+        
+        # Đổi tên đánh dấu hoàn thành
+        done_dir = os.path.join(os.path.dirname(video_path), "processed")
+        os.makedirs(done_dir, exist_ok=True)
+        done_path = os.path.join(done_dir, base_name)
+        os.rename(processing_path, done_path)
+        
+        logger.info(f"\n✅ HOÀN THÀNH: {base_name}")
+        logger.info(f"   → Đã di chuyển vào: processed/{base_name}")
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi xử lý {base_name}: {e}")
+        # Đổi lại tên ban đầu nếu lỗi
+        if os.path.exists(processing_path):
+            os.rename(processing_path, video_path)
+
+
+def auto_watcher(video_dir, stop_flag):
+    """
+    Thread tự động watch folder + xử lý video mới.
+    Cứ 5 giây check 1 lần.
+    """
+    processed_cache = set()
+    
+    while not stop_flag["stop"]:
+        try:
+            videos = find_all_videos(video_dir)
+            
+            for video in videos:
+                # Bỏ qua file đã xử lý
+                if video in processed_cache:
+                    continue
+                    
+                # Bỏ qua file tạm
+                if ".processing_" in video:
+                    continue
+                    
+                logger.info(f"🔔 Phát hiện video mới: {os.path.basename(video)}")
+                processed_cache.add(video)
+                process_single_video(video)
+                
+            time.sleep(5)
+            
+        except Exception as e:
+            logger.error(f"Watcher lỗi: {e}")
+            time.sleep(10)
+
+
 if __name__ == "__main__":
-    video_source = os.getenv("VIDEO_PATH", "0")
-    run_traffic_system(video_source)
+    # Config
+    VIDEO_DIR = os.getenv("VIDEO_DIR", "/app/videos")
+    SINGLE_VIDEO = os.getenv("VIDEO_PATH", "").strip()
+    
+    logger.info(f"\n{'='*70}")
+    logger.info(f"🎥 HỆ THỐNG XỬ LÝ VIDEO GIAO THÔNG")
+    logger.info(f"{'='*70}")
+    logger.info(f"📁 Video folder: {VIDEO_DIR}")
+    
+    # Cách 1: Chạy 1 video cụ thể (nếu có VIDEO_PATH)
+    if SINGLE_VIDEO and SINGLE_VIDEO != "0" and os.path.exists(SINGLE_VIDEO):
+        logger.info(f"📹 Chạy video cụ thể: {SINGLE_VIDEO}")
+        logger.info(f"{'='*70}\n")
+        run_traffic_system(SINGLE_VIDEO)
+        logger.info(f"\n✅ HOÀN THÀNH\n")
+        
+    # Cách 2: Tự động watch folder + xử lý tất cả video mới
+    else:
+        os.makedirs(VIDEO_DIR, exist_ok=True)
+        
+        logger.info(f"🔍 Chế độ: AUTO WATCH FOLDER")
+        logger.info(f"→ Cứ 5 giây check folder 1 lần")
+        logger.info(f"→ Copy video vào folder → AI tự chạy")
+        logger.info(f"{'='*70}\n")
+        
+        # Khởi chạy watcher trong thread riêng
+        stop_flag = {"stop": False}
+        
+        try:
+            auto_watcher(VIDEO_DIR, stop_flag)
+        except KeyboardInterrupt:
+            logger.info("\n⏹️ Dừng hệ thống...")
+            stop_flag["stop"] = True
