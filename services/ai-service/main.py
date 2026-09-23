@@ -21,6 +21,8 @@ from core.video_recorder import VideoRecorder
 import sys
 import time
 import glob
+import json
+import subprocess
 
 
 def setup_logger(name: str, level=logging.INFO) -> logging.Logger:
@@ -314,9 +316,66 @@ def retroactive_update_violation(bike_id, new_plate, lp_crop, frame, bike_box,
         ).start()
 
 
+# ================== PROGRESS + METADATA ==================
+def send_progress(video_filename, frame_current, frame_total, violations_count):
+    """Gửi progress lên backend qua HTTP (fire-and-forget)."""
+    if not video_filename:
+        return
+    try:
+        import requests
+        backend_url = os.getenv("BACKEND_URL", "http://backend:3000")
+        percent = round(frame_current / frame_total * 100, 1) if frame_total > 0 else 0
+        print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)")   # ← THÊM
+
+        requests.post(
+            f"{backend_url}/api/videos/progress",
+            json={
+                "filename": video_filename,
+                "frame_current": frame_current,
+                "frame_total": frame_total,
+                "violations_count": violations_count,
+                "percent": percent,
+            },
+            timeout=1,
+        )
+    except Exception:
+        print(f"  [Progress Error] {e}")   # Silent fail — không ảnh hưởng AI
+
+def extract_video_metadata(video_path):
+    """Extract metadata video bằng ffprobe."""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height,r_frame_rate,duration',
+            '-of', 'json',
+            video_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        data = json.loads(result.stdout)
+        stream = data.get('streams', [{}])[0]
+        # Parse FPS từ "30/1" → 30
+        fps_raw = stream.get('r_frame_rate', '0/1')
+        if '/' in fps_raw:
+            num, den = fps_raw.split('/')
+            fps = round(int(num) / int(den), 1) if int(den) > 0 else 0
+        else:
+            fps = float(fps_raw)
+        return {
+            'width': stream.get('width', 0),
+            'height': stream.get('height', 0),
+            'fps': fps,
+            'duration': round(float(stream.get('duration', 0)), 2),
+            'size_mb': round(os.path.getsize(video_path) / 1024 / 1024, 2),
+        }
+    except Exception as e:
+        print(f"  [Metadata] Lỗi extract: {e}")
+        return {}
+
+
 # ================== PIPELINE CHÍNH ==================
 
-def run_traffic_system(video_path):
+def run_traffic_system(video_path, video_filename=None):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"--> Đang chạy AI trên: {device} "
                 f"({torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'})")
@@ -351,6 +410,9 @@ def run_traffic_system(video_path):
     if not cap.isOpened():
         logger.error(f"Không thể mở video: '{video_path}'")
         return
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    logger.info(f"[Info] Tổng số frame: {total_frames}")
 
     violation_count = 0
     logger.info("[3/3] Bắt đầu quét video...")
@@ -419,6 +481,10 @@ def run_traffic_system(video_path):
 
         if frame_count % 2 != 0:
             continue
+
+        # Gửi progress mỗi 100 frame (frame chẵn)
+        if frame_count % 100 == 0:
+            send_progress(video_filename, frame_count, total_frames, violation_count)
 
         # ✅ Update buffer recorder mỗi frame
         video_recorder.add_frame(frame)
@@ -931,13 +997,28 @@ def process_single_video(video_path):
         logger.info(f"🎬 BẮT ĐẦU XỬ LÝ: {base_name}")
         logger.info(f"{'='*70}")
         
-        run_traffic_system(processing_path)
+        # Extract metadata TRƯỚC khi xử lý
+        metadata = extract_video_metadata(processing_path)
+        if metadata:
+            logger.info(f"[Metadata] {metadata}")
+        
+        # Chạy AI với filename
+        run_traffic_system(processing_path, video_filename=base_name)
         
         # Đổi tên đánh dấu hoàn thành
         done_dir = os.path.join(os.path.dirname(video_path), "processed")
         os.makedirs(done_dir, exist_ok=True)
         done_path = os.path.join(done_dir, base_name)
         os.rename(processing_path, done_path)
+        
+        # Lưu metadata JSON
+        if metadata:
+            metadata['processed_at'] = datetime.now().isoformat()
+            metadata['filename'] = base_name
+            meta_path = os.path.join(done_dir, f"{base_name}.json")
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            logger.info(f"   → Metadata: {meta_path}")
         
         logger.info(f"\n✅ HOÀN THÀNH: {base_name}")
         logger.info(f"   → Đã di chuyển vào: processed/{base_name}")

@@ -40,28 +40,32 @@ const listPendingVideos = async (req, res) => {
     if (!fs.existsSync(VIDEO_DIR)) {
       return res.json({ success: true, data: [] });
     }
-
     const files = fs.readdirSync(VIDEO_DIR);
     const videos = files
       .filter((f) => {
         const ext = path.extname(f).toLowerCase();
         return ['.mp4', '.avi', '.mov', '.mkv', '.webm'].includes(ext);
       })
-      .filter((f) => !f.startsWith('.processing_'))   // Bỏ file đang xử lý
-      .filter((f) => f !== 'processed')                 // Bỏ folder processed
+      .filter((f) => f !== 'processed')
       .map((f) => {
+        // ✅ Xử lý file .processing_*
+        const isProcessing = f.startsWith('.processing_');
+        const displayName = isProcessing ? f.replace('.processing_', '') : f;
+        
         const fullPath = path.join(VIDEO_DIR, f);
         const stat = fs.statSync(fullPath);
+        
         return {
-          filename: f,
+          filename: displayName,           // Tên gốc (match với socket event)
+          actual_filename: f,              // Tên thực tế trên disk
           size: stat.size,
           size_mb: (stat.size / 1024 / 1024).toFixed(2),
           uploaded_at: stat.birthtime.toISOString(),
-          status: 'pending',
+          status: isProcessing ? 'processing' : 'pending',
+          is_processing: isProcessing,
         };
       })
       .sort((a, b) => new Date(b.uploaded_at) - new Date(a.uploaded_at));
-
     res.json({ success: true, data: videos });
   } catch (error) {
     console.error('Lỗi list videos:', error);
@@ -106,25 +110,30 @@ const listProcessedVideos = async (req, res) => {
 const deleteVideo = async (req, res) => {
   try {
     const { filename } = req.params;
-    const { type } = req.query;   // 'pending' hoặc 'processed'
-
-    // Sanitize để tránh path traversal
+    const { type } = req.query;
     const safeName = path.basename(filename);
     const dir = type === 'processed' ? PROCESSED_DIR : VIDEO_DIR;
-    const filePath = path.join(dir, safeName);
-
-    // Verify file nằm trong đúng folder
-    if (!filePath.startsWith(dir)) {
-      return res.status(400).json({ success: false, message: 'Invalid path' });
+    
+    // Thử cả 2 tên: gốc và .processing_
+    const candidates = [
+      path.join(dir, safeName),
+      path.join(dir, `.processing_${safeName}`),
+    ];
+    
+    let filePath = null;
+    for (const cand of candidates) {
+      if (cand.startsWith(dir) && fs.existsSync(cand)) {
+        filePath = cand;
+        break;
+      }
     }
-
-    if (!fs.existsSync(filePath)) {
+    
+    if (!filePath) {
       return res.status(404).json({ success: false, message: 'File không tồn tại' });
     }
-
+    
     fs.unlinkSync(filePath);
-    console.log(`[Video] Đã xóa: ${safeName}`);
-
+    console.log(`[Video] Đã xóa: ${path.basename(filePath)}`);
     res.json({ success: true, message: 'Đã xóa video' });
   } catch (error) {
     console.error('Lỗi xóa video:', error);
@@ -132,9 +141,61 @@ const deleteVideo = async (req, res) => {
   }
 };
 
+// ============ RECEIVE PROGRESS FROM AI ============
+const receiveProgress = (req, res) => {
+  const { filename, frame_current, frame_total, violations_count, percent } = req.body;
+  
+  if (!filename) {
+    return res.status(400).json({ success: false, message: 'Thiếu filename' });
+  }
+
+  const io = req.app.get('io');
+  if (io) {
+    io.emit('video_progress', {
+      filename,
+      frame_current,
+      frame_total,
+      violations_count,
+      percent,
+      updated_at: new Date().toISOString(),
+    });
+  }
+  
+  res.json({ success: true });
+};
+
+// ============ GET METADATA ============
+const getVideoMetadata = (req, res) => {
+  try {
+    const { filename } = req.params;
+    const safeName = path.basename(filename);
+
+    // Tìm trong pending hoặc processed
+    const paths = [
+      path.join(VIDEO_DIR, `${safeName}.json`),
+      path.join(PROCESSED_DIR, `${safeName}.json`),
+    ];
+
+    for (const metaPath of paths) {
+      if (fs.existsSync(metaPath)) {
+        const data = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        return res.json({ success: true, data });
+      }
+    }
+
+    res.json({ success: true, data: null });
+  } catch (error) {
+    console.error('Lỗi đọc metadata:', error);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+};
+
+
 module.exports = {
   uploadVideoHandler,
   listPendingVideos,
   listProcessedVideos,
   deleteVideo,
+  receiveProgress,       // ← THÊM
+  getVideoMetadata,      // ← THÊM
 };

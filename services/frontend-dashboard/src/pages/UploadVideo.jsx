@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import { videoService } from '../services/videoService';
+import { SocketContext } from '../App';   // ← THÊM
 
 const UploadVideo = () => {
   const [uploading, setUploading] = useState(false);
@@ -9,6 +10,12 @@ const UploadVideo = () => {
   const [processedVideos, setProcessedVideos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isDragOver, setIsDragOver] = useState(false);
+  
+  // ✅ Progress realtime
+  const [progressMap, setProgressMap] = useState({});   // { filename: { percent, frame_current, frame_total, violations_count } }
+  const [metadataMap, setMetadataMap] = useState({});   // { filename: { duration, width, height, fps, size_mb } }
+  const socket = useContext(SocketContext);
+
   const fileInputRef = useRef(null);
 
   // ============ FETCH LISTS ============
@@ -19,8 +26,27 @@ const UploadVideo = () => {
         videoService.getPendingVideos(),
         videoService.getProcessedVideos(),
       ]);
+      
+      const processedList = processed.data.data || [];
       setPendingVideos(pending.data.data || []);
-      setProcessedVideos(processed.data.data || []);
+      setProcessedVideos(processedList);
+      
+      // ✅ Load metadata cho từng processed video
+      const metaPromises = processedList.map(async (v) => {
+        try {
+          const res = await videoService.getVideoMetadata(v.filename);
+          return { filename: v.filename, metadata: res.data.data };
+        } catch {
+          return { filename: v.filename, metadata: null };
+        }
+      });
+      const metaResults = await Promise.all(metaPromises);
+      const metaObj = {};
+      metaResults.forEach(({ filename, metadata }) => {
+        if (metadata) metaObj[filename] = metadata;
+      });
+      setMetadataMap(metaObj);
+      
     } catch (err) {
       console.error('Lỗi fetch videos:', err);
     } finally {
@@ -34,6 +60,32 @@ const UploadVideo = () => {
     const interval = setInterval(fetchVideos, 10000);
     return () => clearInterval(interval);
   }, [fetchVideos]);
+
+  // ✅ Listen socket progress events
+  useEffect(() => {
+    if (!socket) return;
+    
+    const handleProgress = (data) => {
+      setProgressMap((prev) => ({
+        ...prev,
+        [data.filename]: data,
+      }));
+    };
+    
+    const handleNewViolation = () => {
+      // Refresh sau 1 giây khi có vi phạm mới
+      setTimeout(fetchVideos, 1000);
+    };
+    
+    socket.on('video_progress', handleProgress);
+    socket.on('new_violation', handleNewViolation);
+    
+    return () => {
+      socket.off('video_progress', handleProgress);
+      socket.off('new_violation', handleNewViolation);
+    };
+  }, [socket, fetchVideos]);
+
 
   // ============ UPLOAD ============
   const handleUpload = async (file) => {
@@ -71,6 +123,12 @@ const UploadVideo = () => {
         fetchVideos();
         setProgress(0);
       }, 1500);
+
+      // ✅ Auto clear message sau 5 giây
+      setTimeout(() => {
+        setMessage(null);
+      }, 5000);
+
     } catch (err) {
       console.error('Upload error:', err);
       setMessage({
@@ -201,26 +259,48 @@ const UploadVideo = () => {
               </p>
             ) : (
               <ul className="space-y-2">
-                {pendingVideos.map((v) => (
-                  <li
-                    key={v.filename}
-                    className="flex justify-between items-center p-3 bg-gray-50 rounded border hover:bg-gray-100"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-800 truncate text-sm">
-                        {v.filename}
-                      </p>
-                      <p className="text-xs text-gray-500">{v.size_mb} MB</p>
-                    </div>
-                    <button
-                      onClick={() => handleDelete(v.filename, 'pending')}
-                      className="text-red-500 hover:text-red-700 ml-2 flex-shrink-0"
-                      title="Xóa"
+                {pendingVideos.map((v) => {
+                  const prog = progressMap[v.filename];
+                  const isProcessing = !!prog;
+                  
+                  return (
+                    <li
+                      key={v.filename}
+                      className="p-3 bg-gray-50 rounded border hover:bg-gray-100"
                     >
-                      🗑️
-                    </button>
-                  </li>
-                ))}
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-gray-800 truncate text-sm">
+                            {isProcessing && '🎬 '}{v.filename}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {v.size_mb} MB
+                            {isProcessing && ` • Frame ${prog.frame_current}/${prog.frame_total}`}
+                            {isProcessing && prog.violations_count > 0 && ` • 🚨 ${prog.violations_count} vi phạm`}
+                          </p>
+                        </div>
+                        {!isProcessing && (
+                          <button
+                            onClick={() => handleDelete(v.filename, 'pending')}
+                            className="text-red-500 hover:text-red-700 ml-2 flex-shrink-0"
+                            title="Xóa"
+                          >
+                            🗑️
+                          </button>
+                        )}
+                      </div>
+                      
+                      {isProcessing && (
+                        <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                          <div
+                            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${prog.percent}%` }}
+                          />
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -242,28 +322,41 @@ const UploadVideo = () => {
               </p>
             ) : (
               <ul className="space-y-2">
-                {processedVideos.map((v) => (
-                  <li
-                    key={v.filename}
-                    className="flex justify-between items-center p-3 bg-gray-50 rounded border"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-800 truncate text-sm">
-                        {v.filename}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        {v.size_mb} MB • {new Date(v.processed_at).toLocaleString('vi-VN')}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => handleDelete(v.filename, 'processed')}
-                      className="text-red-500 hover:text-red-700 ml-2 flex-shrink-0"
-                      title="Xóa"
+                {processedVideos.map((v) => {
+                  const meta = metadataMap[v.filename];
+                  
+                  return (
+                    <li
+                      key={v.filename}
+                      className="flex justify-between items-start p-3 bg-gray-50 rounded border hover:bg-gray-100"
                     >
-                      🗑️
-                    </button>
-                  </li>
-                ))}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-800 truncate text-sm">
+                          ✅ {v.filename}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {meta?.duration ? `⏱️ ${meta.duration}s • ` : ''}
+                          {meta?.width ? `📹 ${meta.width}×${meta.height} • ` : ''}
+                          {meta?.fps ? `${meta.fps} FPS • ` : ''}
+                          {v.size_mb} MB
+                        </p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          {new Date(v.processed_at).toLocaleString('vi-VN')}
+                        </p>
+                      </div>
+                      
+                      <div className="flex gap-2 flex-shrink-0">
+                        <button
+                          onClick={() => handleDelete(v.filename, 'processed')}
+                          className="text-red-500 hover:text-red-700"
+                          title="Xóa"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

@@ -6,6 +6,8 @@ const {
   listPendingVideos,
   listProcessedVideos,
   deleteVideo,
+  receiveProgress,       // ← THÊM
+  getVideoMetadata,      // ← THÊM
 } = require('../controllers/videoController');
 
 // Upload 1 video
@@ -19,5 +21,8 @@ router.get('/processed', listProcessedVideos);
 
 // Xóa video
 router.delete('/:filename', deleteVideo);
+
+router.post('/progress', receiveProgress);              // ← THÊM
+router.get('/metadata/:filename', getVideoMetadata);    // ← THÊM
 
 module.exports = router;

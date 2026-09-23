@@ -26,6 +26,8 @@ export const videoService = {
   // Danh sách đã xử lý
   getProcessedVideos: () => axios.get(`${VIDEO_API}/processed`),
 
+  // Metadata
+  getVideoMetadata: (filename) => axios.get(`${VIDEO_API}/metadata/${filename}`),
   // Xóa video
   deleteVideo: (filename, type = 'pending') =>
     axios.delete(`${VIDEO_API}/${filename}?type=${type}`),
