@@ -10,6 +10,8 @@ logger = logging.getLogger(__name__)
 # Trong Docker: dùng tên service "backend" — KHÔNG dùng localhost
 # Fallback cho dev local: localhost:3000
 API_URL = os.getenv("BACKEND_URL", "http://backend:3000/api/violations")
+if not API_URL.rstrip('/').endswith('/api/violations'):
+    API_URL = API_URL.rstrip('/') + '/api/violations'
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", "15"))       # giây
 API_MAX_RETRIES = int(os.getenv("API_MAX_RETRIES", "2"))
 API_RETRY_DELAY = float(os.getenv("API_RETRY_DELAY", "1.5"))  # giây

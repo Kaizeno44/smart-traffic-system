@@ -57,7 +57,10 @@ pool.connect((err, client, release) => {
 });
 connectRabbitMQ(); // Gọi hàm kết nối RabbitMQ
 
+const videoRoutes = require('./routes/videoRoutes');
+app.use('/api/videos', videoRoutes);
 app.use('/api/violations', violationRoutes);
+
 
 // 7. QUAN TRỌNG: Đổi app.listen thành server.listen để chạy cả Express lẫn Socket.io
 server.listen(PORT, () => {
