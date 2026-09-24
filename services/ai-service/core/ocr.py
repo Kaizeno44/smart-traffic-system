@@ -186,18 +186,32 @@ class LicensePlateOCR:
         rows.append(current)
         return rows
 
-    def _extract_plate_from_items(self, items: List[Dict]) -> Tuple[str, float]:
-        if not items:
-            return "", 0.0
-        rows = self._group_rows(items)
-        parts, confs = [], []
-        for row in rows:
-            row.sort(key=lambda x: x["cx"])
-            parts.append("".join(x["text"] for x in row))
-            confs.extend(x["conf"] for x in row)
-        plate = self.correct_and_format_plate("".join(parts))
-        avg_conf = float(np.mean(confs)) if confs else 0.0
-        return plate, avg_conf
+    # def _extract_plate_from_items(self, items: List[Dict]) -> Tuple[str, float]:
+    #     if not items:
+    #         return "", 0.0
+            
+    #     rows = self._group_rows(items)
+    #     confs = [x["conf"] for x in items]
+    #     avg_conf = float(np.mean(confs)) if confs else 0.0
+    #     # Sắp xếp các phần tử trong mỗi dòng từ trái qua phải theo cx
+    #     sorted_rows_text = []
+    #     for row in rows:
+    #         row.sort(key=lambda x: x["cx"])
+    #         sorted_rows_text.append("".join(x["text"] for x in row))
+    #     # TRƯỜNG HỢP BIỂN 2 DÒNG (Đặc trưng biển xe máy Việt Nam)
+    #     if len(rows) == 2:
+    #         top_raw = sorted_rows_text[0]
+    #         bottom_raw = sorted_rows_text[1]
+    #         top_fixed = self._fix_top_line(top_raw)
+    #         bottom_fixed = self._fix_bottom_line(bottom_raw)
+    #         # Nếu cả 2 dòng chuẩn dạng: top có >=3 ký tự và bottom có 4-5 số
+    #         if len(top_fixed) >= 3 and 4 <= len(bottom_fixed) <= 5:
+    #             plate = f"{top_fixed}-{bottom_fixed}"
+    #             return plate, avg_conf
+    #     # TRƯỜNG HỢP BIỂN 1 DÒNG (HOẶC > 2 BOX BỊ TÁCH RỜI) -> Fallback sang correct_and_format_plate
+    #     full_text = "".join(sorted_rows_text)
+    #     plate = self.correct_and_format_plate(full_text)
+    #     return plate, avg_conf
 
     # ---------- PIPELINE ----------
     def read_plate(self, crop_image: np.ndarray,
@@ -235,3 +249,70 @@ class LicensePlateOCR:
         if conf_proc > conf_orig:
             return plate_proc, conf_proc
         return plate_orig, conf_orig
+    def _fix_top_line(self, text: str) -> str:
+        """
+        Chuẩn hoá dòng 1 (Tỉnh + Series):
+        VD: '81-AR' -> '81AR', '59-X3' -> '59X3'
+        - 2 ký tự đầu: số
+        - Ký tự 3: chữ cái
+        - Ký tự 4 (nếu có): chữ cái hoặc số
+        """
+        raw = re.sub(r'[^A-Z0-9]', '', text.upper())
+        if len(raw) < 3:
+            return raw
+        c = list(raw)
+        # 2 ký tự đầu là số tỉnh
+        for i in (0, 1):
+            c[i] = self.CHAR_TO_DIGIT.get(c[i], c[i])
+        # Ký tự 3 là chữ series (A-Z)
+        c[2] = self.DIGIT_TO_CHAR.get(c[2], c[2])
+        # Dòng trên của biển 2 dòng xe máy không bao giờ vượt quá 4 ký tự!
+        return "".join(c[:4])
+
+    def _fix_bottom_line(self, text: str) -> str:
+        """
+        Chuẩn hoá dòng 2 (4 hoặc 5 số):
+        VD: '010.82' -> '01082', 'O1O82' -> '01082'
+        """
+        raw = re.sub(r'[^A-Z0-9]', '', text.upper())
+        # Chuyển các chữ cái hay nhận nhầm thành số
+        c = [self.CHAR_TO_DIGIT.get(ch, ch) for ch in raw]
+        digits = "".join(ch for ch in c if ch.isdigit())
+        # Nếu dài hơn 5 chữ số do rác viền, lấy 5 chữ số hợp lý nhất
+        if len(digits) > 5:
+            digits = digits[:5]
+        return digits
+
+    def _extract_plate_from_items(self, items: List[Dict], img_h: int = 0) -> Tuple[str, float]:
+        if not items:
+            return "", 0.0
+
+        confs = [x["conf"] for x in items]
+        avg_conf = float(np.mean(confs)) if confs else 0.0
+
+        # Nếu ảnh vuông/chữ nhật đứng (biển 2 dòng) hoặc có box ở trên và dưới
+        # Phân dòng theo toạ độ cy: dòng trên có cy < cy_mid, dòng dưới có cy >= cy_mid
+        min_y = min(it["cy"] for it in items)
+        max_y = max(it["cy"] for it in items)
+
+        # Nếu độ chênh lệch Y giữa các box lớn (> 20px) -> Chắc chắn là biển 2 dòng
+        if (max_y - min_y) >= 15:
+            mid_y = (min_y + max_y) / 2.0
+            top_items = sorted([it for it in items if it["cy"] < mid_y], key=lambda x: x["cx"])
+            bottom_items = sorted([it for it in items if it["cy"] >= mid_y], key=lambda x: x["cx"])
+
+            top_raw = "".join(x["text"] for x in top_items)
+            bottom_raw = "".join(x["text"] for x in bottom_items)
+
+            top_fixed = self._fix_top_line(top_raw)
+            bottom_fixed = self._fix_bottom_line(bottom_raw)
+
+            if len(top_fixed) >= 3 and 4 <= len(bottom_fixed) <= 5:
+                return f"{top_fixed}-{bottom_fixed}", avg_conf
+
+        # Fallback với biển 1 dòng (dài)
+        items_sorted = sorted(items, key=lambda x: x["cx"])
+        full_text = "".join(x["text"] for x in items_sorted)
+        plate = self.correct_and_format_plate(full_text)
+        return plate, avg_conf
+

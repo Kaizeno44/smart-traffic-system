@@ -188,7 +188,11 @@ def read_plate_from_crop(ocr_model, crop, bike_id=None, context="det"):
     if not raw_str:
         return "", 0.0
 
-    formatted = parse_and_normalize_plate(raw_str)
+    # Nếu raw_str đã có định dạng hợp lệ dạng XXYY-ZZZZZ (ví dụ 81AR-01082) thì giữ nguyên!
+    if "-" in raw_str and len(raw_str) >= 8:
+        formatted = raw_str
+    else:
+        formatted = parse_and_normalize_plate(raw_str)
     if bike_id is not None:
         status = f"✅ {formatted}" if formatted else "❌ BỎ (format sai)"
         logger.info(f"[OCR {context}] ID={bike_id} raw='{raw_str}' "
@@ -649,16 +653,18 @@ def run_traffic_system(video_path):
                 _, lp = lp_assignments[bike_id]
                 lx1, ly1, lx2, ly2 = lp["bbox"]
 
-                # Tính lề động: tối thiểu 20px, hoặc 15% kích thước biển số để không bao giờ bị cắt cụt số
                 box_w = lx2 - lx1
                 box_h = ly2 - ly1
-                pad_w = max(20, int(box_w * 0.15))
-                pad_h = max(15, int(box_h * 0.15))
+                # Mở rộng mạnh hơn để tránh bbox LP bị cắt mép
+                pad_left   = max(100, int(box_w * 1.00))
+                pad_right  = max(80,  int(box_w * 0.80))
+                pad_top    = max(50,  int(box_h * 0.70))
+                pad_bottom = max(50,  int(box_h * 0.70))
 
-                crop_x1 = max(0, lx1 - pad_w)
-                crop_y1 = max(0, ly1 - pad_h)
-                crop_x2 = min(w_frame, lx2 + pad_w)
-                crop_y2 = min(h_frame, ly2 + pad_h)
+                crop_x1 = max(0, lx1 - pad_left)
+                crop_y1 = max(0, ly1 - pad_top)
+                crop_x2 = min(w_frame, lx2 + pad_right)
+                crop_y2 = min(h_frame, ly2 + pad_bottom)
 
 
                 if (crop_x2 - crop_x1) >= 20 and (crop_y2 - crop_y1) >= 14:
