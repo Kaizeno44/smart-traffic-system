@@ -74,7 +74,7 @@ services:
       - VIDEO_PATH=                        # ← ĐỂ RỖNG
       - YOLO_CONFIG_DIR=/tmp/Ultralytics
       - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
-      - BACKEND_URL=http://backend:3000
+      - BACKEND_URL=http://backend:3000/api/violations
     volumes:
       - ./services/ai-service:/app
       - ./models/paddleocr:/root/.paddleocr

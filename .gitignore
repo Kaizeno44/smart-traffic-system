@@ -40,3 +40,6 @@ dist/
 
 models/paddleocr/
 models/paddlex/
+
+# AI processed video results
+services/ai-service/videos/processed/*

@@ -6,23 +6,30 @@ const {
   listPendingVideos,
   listProcessedVideos,
   deleteVideo,
-  receiveProgress,       // ← THÊM
-  getVideoMetadata,      // ← THÊM
+  receiveProgress,
+  getVideoMetadata,
+  streamVideo,
+  cancelProcessing,       // ✅ THÊM DÒNG NÀY
 } = require('../controllers/videoController');
 
-// Upload 1 video
+// ============ UPLOAD ============
 router.post('/upload', uploadVideo.single('video'), uploadVideoHandler);
 
-// Danh sách video đang chờ xử lý
+// ============ LIST ============
 router.get('/pending', listPendingVideos);
-
-// Danh sách video đã xử lý
 router.get('/processed', listProcessedVideos);
 
-// Xóa video
+// ============ DELETE ============
 router.delete('/:filename', deleteVideo);
 
-router.post('/progress', receiveProgress);              // ← THÊM
-router.get('/metadata/:filename', getVideoMetadata);    // ← THÊM
+// ============ PROGRESS + METADATA ============
+router.post('/progress', receiveProgress);
+router.get('/metadata/:filename', getVideoMetadata);
+
+// ============ STREAM (Preview) ============
+router.get('/stream/:filename', streamVideo);
+
+// ============ CANCEL ============
+router.post('/cancel/:filename', cancelProcessing);
 
 module.exports = router;

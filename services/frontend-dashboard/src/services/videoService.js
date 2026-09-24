@@ -4,7 +4,6 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 const VIDEO_API = `${API_BASE}/videos`;
 
 export const videoService = {
-  // Upload video
   uploadVideo: async (file, onProgress) => {
     const formData = new FormData();
     formData.append('video', file);
@@ -16,19 +15,22 @@ export const videoService = {
           onProgress(Math.round((e.loaded * 100) / e.total));
         }
       },
-      timeout: 300000,   // 5 phút cho video lớn
+      timeout: 300000,
     });
   },
 
-  // Danh sách chờ xử lý
   getPendingVideos: () => axios.get(`${VIDEO_API}/pending`),
-
-  // Danh sách đã xử lý
   getProcessedVideos: () => axios.get(`${VIDEO_API}/processed`),
 
-  // Metadata
-  getVideoMetadata: (filename) => axios.get(`${VIDEO_API}/metadata/${filename}`),
-  // Xóa video
   deleteVideo: (filename, type = 'pending') =>
-    axios.delete(`${VIDEO_API}/${filename}?type=${type}`),
+    axios.delete(`${VIDEO_API}/${encodeURIComponent(filename)}?type=${type}`),
+
+  getVideoMetadata: (filename) =>
+    axios.get(`${VIDEO_API}/metadata/${encodeURIComponent(filename)}`),
+
+  cancelProcessing: (filename) =>
+    axios.post(`${VIDEO_API}/cancel/${encodeURIComponent(filename)}`),
+
+  getStreamUrl: (filename, type = 'processed') =>
+    `${VIDEO_API}/stream/${encodeURIComponent(filename)}?type=${type}`,
 };

@@ -190,12 +190,96 @@ const getVideoMetadata = (req, res) => {
   }
 };
 
+// ============ STREAM VIDEO (cho preview) ============
+const streamVideo = (req, res) => {
+  try {
+    const { filename } = req.params;
+    const { type } = req.query;
+    const safeName = path.basename(filename);
+    const dir = type === 'processed' ? PROCESSED_DIR : VIDEO_DIR;
+    const candidates = [
+      path.join(dir, safeName),
+      path.join(dir, `.processing_${safeName}`),
+    ];
+    let filePath = null;
+    for (const cand of candidates) {
+      if (cand.startsWith(dir) && fs.existsSync(cand)) {
+        filePath = cand;
+        break;
+      }
+    }
+    if (!filePath) {
+      return res.status(404).json({ success: false, message: 'File không tồn tại' });
+    }
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+    if (range) {
+      // Range request → stream
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = end - start + 1;
+      const stream = fs.createReadStream(filePath, { start, end });
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': 'video/mp4',
+      });
+      stream.pipe(res);
+    } else {
+      // Full request
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': 'video/mp4',
+      });
+      fs.createReadStream(filePath).pipe(res);
+    }
+  } catch (error) {
+    console.error('Lỗi stream video:', error);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+};
+
+// ============ CANCEL AI PROCESSING ============
+const cancelProcessing = async (req, res) => {
+  try {
+    const { filename } = req.params;
+    if (!filename) {
+      return res.status(400).json({ success: false, message: 'Thiếu filename' });
+    }
+    // Gọi AI service để cancel
+    const AI_CANCEL_URL = process.env.AI_CANCEL_URL || 'http://ai:9999/cancel';
+    try {
+      const response = await fetch(AI_CANCEL_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename }),
+      });
+      if (response.ok) {
+        console.log(`[Cancel] Đã gửi cancel cho AI: ${filename}`);
+        return res.json({ success: true, message: 'Đã gửi yêu cầu hủy' });
+      } else {
+        return res.status(500).json({ success: false, message: 'AI không phản hồi' });
+      }
+    } catch (fetchErr) {
+      console.error('[Cancel] Lỗi kết nối AI:', fetchErr.message);
+      return res.status(503).json({ success: false, message: 'Không kết nối được AI service' });
+    }
+  } catch (error) {
+    console.error('Lỗi cancel:', error);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+};
 
 module.exports = {
   uploadVideoHandler,
   listPendingVideos,
   listProcessedVideos,
   deleteVideo,
-  receiveProgress,       // ← THÊM
-  getVideoMetadata,      // ← THÊM
+  receiveProgress,
+  getVideoMetadata,
+  streamVideo,
+  cancelProcessing,      // ← THÊM
 };

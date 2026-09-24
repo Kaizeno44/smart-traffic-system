@@ -51,6 +51,9 @@ logging.getLogger("ppocr").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("PIL").setLevel(logging.WARNING)
 
+# ✅ Flag cancel
+CANCEL_FLAGS = set()   # Set các filename cần cancel
+
 
 # ================== CẤU HÌNH ==================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -318,14 +321,37 @@ def retroactive_update_violation(bike_id, new_plate, lp_crop, frame, bike_box,
 
 # ================== PROGRESS + METADATA ==================
 def send_progress(video_filename, frame_current, frame_total, violations_count):
-    """Gửi progress lên backend qua HTTP (fire-and-forget)."""
+    """Gửi progress lên backend qua HTTP."""
+    if not video_filename:
+        return
+    try:
+        import requests
+        # ✅ URL riêng cho progress — KHÔNG dùng BACKEND_URL (đã có /api/violations)
+        base_url = os.getenv("BACKEND_BASE_URL", "http://backend:3000")
+        percent = round(frame_current / frame_total * 100, 1) if frame_total > 0 else 0
+        print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)", flush=True)
+
+        requests.post(
+            f"{base_url}/api/videos/progress",
+            json={
+                "filename": video_filename,
+                "frame_current": frame_current,
+                "frame_total": frame_total,
+                "violations_count": violations_count,
+                "percent": percent,
+            },
+            timeout=1,
+        )
+    except Exception as e:
+        print(f"  [Progress Error] {e}", flush=True)
+    """Gửi progress lên backend qua HTTP."""
     if not video_filename:
         return
     try:
         import requests
         backend_url = os.getenv("BACKEND_URL", "http://backend:3000")
         percent = round(frame_current / frame_total * 100, 1) if frame_total > 0 else 0
-        print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)")   # ← THÊM
+        print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)", flush=True)
 
         requests.post(
             f"{backend_url}/api/videos/progress",
@@ -338,8 +364,8 @@ def send_progress(video_filename, frame_current, frame_total, violations_count):
             },
             timeout=1,
         )
-    except Exception:
-        print(f"  [Progress Error] {e}")   # Silent fail — không ảnh hưởng AI
+    except Exception as e:
+        print(f"  [Progress Error] {e}", flush=True)
 
 def extract_video_metadata(video_path):
     """Extract metadata video bằng ffprobe."""
@@ -482,9 +508,15 @@ def run_traffic_system(video_path, video_filename=None):
         if frame_count % 2 != 0:
             continue
 
-        # Gửi progress mỗi 100 frame (frame chẵn)
+        # ✅ Gửi progress + check cancel mỗi 100 frame
         if frame_count % 100 == 0:
             send_progress(video_filename, frame_count, total_frames, violation_count)
+            # Check cancel flag từ backend
+            if video_filename in CANCEL_FLAGS:
+                logger.warning(f"⏹️ Video bị CANCEL bởi user: {video_filename}")
+                CANCEL_FLAGS.discard(video_filename)
+                cap.release()
+                return
 
         # ✅ Update buffer recorder mỗi frame
         video_recorder.add_frame(frame)
@@ -959,6 +991,9 @@ def run_traffic_system(video_path, video_filename=None):
             bike_last_seen.pop(bid, None)
 
     cap.release()
+    if video_filename and total_frames > 0:
+        send_progress(video_filename, total_frames, total_frames, violation_count)
+    
     logger.info(f"[HOÀN THÀNH] Tổng số vi phạm bắt được: {violation_count}")
 
 
@@ -1060,6 +1095,47 @@ def auto_watcher(video_dir, stop_flag):
             logger.error(f"Watcher lỗi: {e}")
             time.sleep(10)
 
+# ================== HTTP SERVER ĐỂ NHẬN CANCEL ==================
+def start_cancel_listener():
+    """Chạy HTTP server nhỏ để nhận cancel request từ backend."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import json as _json
+
+    class CancelHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            if self.path == '/cancel':
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                try:
+                    data = _json.loads(body)
+                    filename = data.get('filename')
+                    if filename:
+                        CANCEL_FLAGS.add(filename)
+                        print(f"  [Cancel] Nhận cancel cho: {filename}", flush=True)
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(b'{"success": true}')
+                        return
+                except Exception as e:
+                    print(f"  [Cancel] Lỗi: {e}", flush=True)
+
+            self.send_response(400)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass   # Tắt log
+
+    server = HTTPServer(('0.0.0.0', 9999), CancelHandler)
+    print("  [Cancel Server] Đang nghe tại port 9999...", flush=True)
+    server.serve_forever()
+
+def start_cancel_listener_thread():
+    """Chạy listener trong thread riêng."""
+    import threading
+    t = threading.Thread(target=start_cancel_listener, daemon=True)
+    t.start()
+
 
 if __name__ == "__main__":
     # Config
@@ -1070,6 +1146,9 @@ if __name__ == "__main__":
     logger.info(f"🎥 HỆ THỐNG XỬ LÝ VIDEO GIAO THÔNG")
     logger.info(f"{'='*70}")
     logger.info(f"📁 Video folder: {VIDEO_DIR}")
+
+    # ✅ Khởi động cancel listener
+    start_cancel_listener_thread()
     
     # Cách 1: Chạy 1 video cụ thể (nếu có VIDEO_PATH)
     if SINGLE_VIDEO and SINGLE_VIDEO != "0" and os.path.exists(SINGLE_VIDEO):
