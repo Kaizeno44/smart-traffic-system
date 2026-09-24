@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 from ultralytics import YOLO
 import torch
+from collections import Counter
 
 from core.ocr import LicensePlateOCR
 from core.red_light_logic import RedLightDetector
@@ -64,7 +65,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Ngưỡng phát hiện
 LP_CONF_THRESHOLD = 0.50
 HELMET_CONF_THRESHOLD = 0.35
-NO_HELMET_CONF_THRESHOLD = 0.70
+NO_HELMET_CONF_THRESHOLD = 0.25
 TL_CONF_THRESHOLD = 0.15
 MOTO_TRACK_CONF = 0.25
 
@@ -163,6 +164,56 @@ def has_skin_tone_pixels(crop, threshold=0.05):
 
 
 def parse_and_normalize_plate(raw_text):
+    """
+    Chuẩn hoá biển số VN — ưu tiên series chữ + tail dài (biển mới VN)
+    để tránh regex greedy cướp số 0 của tail vào series.
+    """
+    if not raw_text:
+        return ""
+
+    clean = "".join(c for c in raw_text.upper() if c.isalnum())
+    if not (7 <= len(clean) <= 9):
+        return ""
+
+    # Thử các cấu trúc ưu tiên: tail 5 số TRƯỚC, tail 4 số SAU
+    # (n_letters, has_digit, tail_len)
+    combos = [
+        (2, 0, 5),   # AB-12345   ← ưu tiên nhất
+        (1, 0, 5),   # A-12345
+        (1, 1, 5),   # A1-12345   (VD: 47B3-01230)
+        (2, 1, 4),   # AB1-2345
+        (1, 1, 4),   # A1-2345
+        (2, 0, 4),   # AB-1234    (biển cũ)
+        (1, 0, 4),   # A-1234
+    ]
+
+    for n_letters, has_digit, tail_len in combos:
+        idx = 2 + n_letters + has_digit
+        if idx + tail_len != len(clean):
+            continue
+
+        city = clean[:2]
+        series = clean[2:idx]
+        tail = clean[idx:]
+
+        # Validate
+        if not city.isdigit():
+            continue
+        if not tail.isdigit():
+            continue
+
+        if has_digit:
+            # series = n_letters chữ + 1 số cuối
+            if not (series[-1].isdigit()
+                    and all(c.isalpha() for c in series[:-1])):
+                continue
+        else:
+            if not all(c.isalpha() for c in series):
+                continue
+
+        return f"{city}{series}-{tail}"
+
+    return ""
     """Chuẩn hoá biển số VN — chỉ nhận khi match regex chuẩn."""
     if not raw_text:
         return ""
@@ -326,30 +377,7 @@ def send_progress(video_filename, frame_current, frame_total, violations_count):
         return
     try:
         import requests
-        # ✅ URL riêng cho progress — KHÔNG dùng BACKEND_URL (đã có /api/violations)
-        base_url = os.getenv("BACKEND_BASE_URL", "http://backend:3000")
-        percent = round(frame_current / frame_total * 100, 1) if frame_total > 0 else 0
-        print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)", flush=True)
-
-        requests.post(
-            f"{base_url}/api/videos/progress",
-            json={
-                "filename": video_filename,
-                "frame_current": frame_current,
-                "frame_total": frame_total,
-                "violations_count": violations_count,
-                "percent": percent,
-            },
-            timeout=1,
-        )
-    except Exception as e:
-        print(f"  [Progress Error] {e}", flush=True)
-    """Gửi progress lên backend qua HTTP."""
-    if not video_filename:
-        return
-    try:
-        import requests
-        backend_url = os.getenv("BACKEND_URL", "http://backend:3000")
+        backend_url = os.getenv("BACKEND_BASE_URL", "http://backend:3000")
         percent = round(frame_current / frame_total * 100, 1) if frame_total > 0 else 0
         print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)", flush=True)
 
@@ -447,6 +475,8 @@ def run_traffic_system(video_path, video_filename=None):
     bike_plates = {}
     bike_lp_crops = {}
     bike_recorded_violations = {}
+    bike_plate_votes = {}   # ← THÊM DÒNG NÀY
+    
     bike_last_seen = {}
     recorded_plate_violations = set()
     global_recorded_plates = set()
@@ -607,15 +637,10 @@ def run_traffic_system(video_path, video_filename=None):
                 continue
 
             # 4. ✅ SKIN TONE CHECK — lọc mũ màu
-            mid_y = y1 + int((y2 - y1) * 0.5)   # Chỉ lấy 50% trên
-            head_crop = frame[
-                max(0, y1):min(h_frame, mid_y),
-                max(0, x1):min(w_frame, x2)
-            ]
-            
-            if not has_skin_tone_pixels(head_crop, threshold=0.15):
-                logger.info(f"  [SKIN FILTER] Reject no_helmet: "
-                            f"conf={conf:.2f}")
+            face_y1 = y1 + int((y2 - y1) * 0.35)
+            head_crop = frame[max(0, face_y1):min(h_frame, y2),
+                              max(0, x1):min(w_frame, x2)]
+            if not has_skin_tone_pixels(head_crop, threshold=0.05):
                 continue
 
             no_helmet_dets.append(nh)
@@ -730,7 +755,7 @@ def run_traffic_system(video_path, video_filename=None):
             cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2),
                           (255, 165, 0), 2)
 
-            expanded_y1 = max(0, by1 - int((by2 - by1) * 1.0))
+            expanded_y1 = max(0, by1 - int((by2 - by1) * 3.0))
             head_max_y = by1 + int((by2 - by1) * 0.70)
 
             # ---- Cập nhật biển số từ LP assigned ----
@@ -762,20 +787,23 @@ def run_traffic_system(video_path, video_filename=None):
                                 bike_id=bike_id, context="track"
                             )
                             if new_str and len(new_str.replace("-", "")) >= 7:
-                                bike_plates[bike_id] = new_str
-                                logger.info(f"[LP Track] ID={bike_id} "
-                                            f"cập nhật biển: {new_str}")
-
-                                retroactive_update_violation(
-                                    bike_id=bike_id,
-                                    new_plate=new_str,
-                                    lp_crop=lp_crop,
-                                    frame=frame,
-                                    bike_box=(bx1, by1, bx2, by2),
-                                    bike_recorded_violations=bike_recorded_violations,
-                                    recorded_plate_violations=recorded_plate_violations,
-                                    OUTPUT_DIR=OUTPUT_DIR,
-                                )
+                                vote = bike_plate_votes.setdefault(bike_id, Counter())
+                                vote[new_str] += 1
+                                top_plate, top_count = vote.most_common(1)[0]
+                                if top_count >= 3:
+                                    bike_plates[bike_id] = top_plate
+                                    logger.info(f"[Vote] ID={bike_id} chốt biển '{top_plate}' "
+                                                f"({top_count} phiếu / tổng {sum(vote.values())})")
+                                    retroactive_update_violation(
+                                        bike_id=bike_id,
+                                        new_plate=top_plate,
+                                        lp_crop=lp_crop,
+                                        frame=frame,
+                                        bike_box=(bx1, by1, bx2, by2),
+                                        bike_recorded_violations=bike_recorded_violations,
+                                        recorded_plate_violations=recorded_plate_violations,
+                                        OUTPUT_DIR=OUTPUT_DIR,
+                                    )
 
             detected_lp_str = bike_plates.get(bike_id, "")
             if detected_lp_str:
@@ -788,8 +816,8 @@ def run_traffic_system(video_path, video_filename=None):
             no_helmet_conf = 0.0
             for nh in no_helmet_dets:
                 hx1, hy1, hx2, hy2 = nh["bbox"]
-                if (bx1 - 40 <= hx1 and hx2 <= bx2 + 40
-                        and expanded_y1 <= hy1 and hy2 <= head_max_y):
+                if (bx1 - 200 <= hx1 and hx2 <= bx2 + 200
+                        and expanded_y1 - 100 <= hy1 and hy2 <= head_max_y + 80):
                     has_no_helmet = True
                     no_helmet_conf = nh["conf"]
                     break
@@ -989,6 +1017,7 @@ def run_traffic_system(video_path, video_filename=None):
             bike_recorded_violations.pop(bid, None)
             motor_positions_history.pop(bid, None)
             bike_last_seen.pop(bid, None)
+            bike_plate_votes.pop(bid, None)   # ← THÊM DÒNG NÀY
 
     cap.release()
     if video_filename and total_frames > 0:
