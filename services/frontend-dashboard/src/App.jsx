@@ -4,7 +4,7 @@ import { io } from 'socket.io-client';
 import MainLayout from './layouts/MainLayout';
 import Dashboard from './pages/Dashboard';
 import Violations from './pages/Violations';
-
+import UploadVideo from './pages/UploadVideo';
 // 1. Tao Context de chia se ket noi Socket cho toan bo cac trang
 export const SocketContext = createContext();
 
@@ -31,6 +31,7 @@ function App() {
           <Route path="/" element={<MainLayout />}>
             <Route index element={<Dashboard />} />
             <Route path="violations" element={<Violations />} />
+            <Route path="upload" element={<UploadVideo />} />
             {/* them cac route khac vao day sau */}
           </Route>
         </Routes>

@@ -21,7 +21,7 @@ class LicensePlateOCR:
     PLATE_REGEX = re.compile(r'^(\d{2})([A-Z]{1,2}\d?)(\d{4,5})$')
 
     # Ngưỡng resize tối thiểu — ảnh nhỏ hơn sẽ được phóng to
-    TARGET_MIN_HEIGHT = 96
+    TARGET_MIN_HEIGHT = 128
 
     def __init__(self, use_gpu: bool = False):
         try:
@@ -69,69 +69,76 @@ class LicensePlateOCR:
     # ---------- SỬA LỖI VỊ TRÍ ----------
     def _fix_positions(self, raw: str) -> Optional[str]:
         """
-        Ép ký tự theo vị trí chuẩn biển VN:
-        - 2 ký tự đầu = mã tỉnh (số)
-        - Ký tự 3-4 = series (chữ, có thể + 1 số)
-        - 4-5 ký tự cuối = số thứ tự (số)
+        Trả về biển số đã format (có dấu gạch), hoặc None.
+        Thử cấu trúc theo thứ tự ưu tiên để tránh regex greedy cướp số của tail.
         """
         if not (7 <= len(raw) <= 9):
             return None
 
         c = list(raw)
 
-        # --- FIX LỖI QUANG HỌC ĐẶC BIỆT ---
-        # 1. Bỏ 'I' thừa ở vị trí 3 khi tiếp theo là chữ cái khác
-        #    VD: '77IN91266' → '77N91266' (I đọc nhầm từ N/1)
+        # Fix 'I' thừa ở vị trí 3
         if len(c) >= 4 and c[2] == 'I' and c[3].isalpha() and c[3] != 'I':
             del c[2]
 
-        # 2. Bỏ 'I' thừa khi nó nằm giữa 2 chữ số (VD: '5011234' → '501234')
-        #    nhưng chỉ khi số lượng ký tự > 7 (không cần thiết)
-
-        # --- Ép ký tự theo vị trí ---
-        # Mã tỉnh (2 ký tự đầu) → số
+        # Mã tỉnh → số
         for i in (0, 1):
             c[i] = self.CHAR_TO_DIGIT.get(c[i], c[i])
 
-        # Series bắt đầu (ký tự 3) → chữ
+        # Series bắt đầu → chữ
         c[2] = self.DIGIT_TO_CHAR.get(c[2], c[2])
 
-        # Thử series 1 chữ (51G) rồi 2 chữ (51LD)
-        for series_len in (1, 2):
-            idx = 2 + series_len
-            if idx > len(c) - 4:
+        # Ưu tiên: series toàn chữ + tail dài (biển mới VN)
+        # (n_letters, has_digit_in_series, tail_len)
+        combos = [
+            (2, 0, 5),   # AB-12345   ← ưu tiên nhất
+            (1, 0, 5),   # A-12345
+            (1, 1, 5),   # A1-12345   (VD: 47B3-01230)
+            (2, 1, 4),   # AB1-2345
+            (1, 1, 4),   # A1-2345
+            (2, 0, 4),   # AB-1234    (biển cũ)
+            (1, 0, 4),   # A-1234
+        ]
+
+        for n_letters, has_digit, tail_len in combos:
+            series_total = n_letters + has_digit
+            idx = 2 + series_total
+            if idx + tail_len != len(c):
                 continue
+                
             cand = c.copy()
-            # Series → chữ
-            for i in range(2, idx):
+            for i in range(2, 2 + n_letters):
                 cand[i] = self.DIGIT_TO_CHAR.get(cand[i], cand[i])
-            # Tail → số
+            if has_digit:
+                cand[2 + n_letters] = self.CHAR_TO_DIGIT.get(
+                    cand[2 + n_letters], cand[2 + n_letters])
             for i in range(idx, len(cand)):
                 cand[i] = self.CHAR_TO_DIGIT.get(cand[i], cand[i])
-            s = "".join(cand)
-            if self.PLATE_REGEX.match(s):
-                return s
+                
+            city = "".join(cand[:2])
+            letters = "".join(cand[2:2 + n_letters])
+            series_digit = ("".join(cand[2 + n_letters:2 + series_total])
+                            if has_digit else "")
+            tail = "".join(cand[2 + series_total:])
+            
+            # Verify bằng tay — không dùng regex ambiguous nữa
+            if (city.isdigit()
+                    and letters.isalpha()
+                    and (not has_digit or series_digit.isdigit())
+                    and tail.isdigit()
+                    and len(tail) == tail_len):
+                return f"{city}{letters}{series_digit}-{tail}"
+
         return None
 
     def correct_and_format_plate(self, text: str) -> str:
-        """
-        Chuẩn hoá biển số về dạng '50A4-11633' (nhất quán với main.py).
-        Ví dụ: '50-A4 116.33' → '50A4-11633'
-        """
+        """Chuẩn hoá biển số về dạng '81AR-01082'."""
         raw = re.sub(r'[^A-Z0-9]', '', text.upper())
         if not raw:
             return ""
 
         fixed = self._fix_positions(raw)
-        if not fixed:
-            return raw
-
-        m = self.PLATE_REGEX.match(fixed)
-        if not m:
-            return fixed
-
-        city, series, tail = m.groups()
-        return f"{city}{series}-{tail}"
+        return fixed if fixed else raw
 
     # ---------- OCR ----------
     def _run_ocr(self, img: np.ndarray) -> List[Dict]:
@@ -186,32 +193,19 @@ class LicensePlateOCR:
         rows.append(current)
         return rows
 
-    # def _extract_plate_from_items(self, items: List[Dict]) -> Tuple[str, float]:
-    #     if not items:
-    #         return "", 0.0
-            
-    #     rows = self._group_rows(items)
-    #     confs = [x["conf"] for x in items]
-    #     avg_conf = float(np.mean(confs)) if confs else 0.0
-    #     # Sắp xếp các phần tử trong mỗi dòng từ trái qua phải theo cx
-    #     sorted_rows_text = []
-    #     for row in rows:
-    #         row.sort(key=lambda x: x["cx"])
-    #         sorted_rows_text.append("".join(x["text"] for x in row))
-    #     # TRƯỜNG HỢP BIỂN 2 DÒNG (Đặc trưng biển xe máy Việt Nam)
-    #     if len(rows) == 2:
-    #         top_raw = sorted_rows_text[0]
-    #         bottom_raw = sorted_rows_text[1]
-    #         top_fixed = self._fix_top_line(top_raw)
-    #         bottom_fixed = self._fix_bottom_line(bottom_raw)
-    #         # Nếu cả 2 dòng chuẩn dạng: top có >=3 ký tự và bottom có 4-5 số
-    #         if len(top_fixed) >= 3 and 4 <= len(bottom_fixed) <= 5:
-    #             plate = f"{top_fixed}-{bottom_fixed}"
-    #             return plate, avg_conf
-    #     # TRƯỜNG HỢP BIỂN 1 DÒNG (HOẶC > 2 BOX BỊ TÁCH RỜI) -> Fallback sang correct_and_format_plate
-    #     full_text = "".join(sorted_rows_text)
-    #     plate = self.correct_and_format_plate(full_text)
-    #     return plate, avg_conf
+    def _extract_plate_from_items(self, items: List[Dict]) -> Tuple[str, float]:
+        if not items:
+            return "", 0.0
+        rows = self._group_rows(items)
+        parts, confs = [], []
+        for row in rows:
+            row.sort(key=lambda x: x["cx"])
+            parts.append("".join(x["text"] for x in row))
+            confs.extend(x["conf"] for x in row)
+        raw_combined = "".join(parts).replace(".", "").replace(" ", "").replace(",", "")
+        plate = self.correct_and_format_plate(raw_combined)
+        avg_conf = float(np.mean(confs)) if confs else 0.0
+        return plate, avg_conf
 
     # ---------- PIPELINE ----------
     def read_plate(self, crop_image: np.ndarray,

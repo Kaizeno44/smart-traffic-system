@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 from ultralytics import YOLO
 import torch
+from collections import Counter
 
 from core.ocr import LicensePlateOCR
 from core.red_light_logic import RedLightDetector
@@ -19,6 +20,10 @@ from core.video_recorder import VideoRecorder
 
 # ================== LOGGING SETUP ==================
 import sys
+import time
+import glob
+import json
+import subprocess
 
 
 def setup_logger(name: str, level=logging.INFO) -> logging.Logger:
@@ -47,6 +52,9 @@ logging.getLogger("ppocr").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("PIL").setLevel(logging.WARNING)
 
+# ✅ Flag cancel
+CANCEL_FLAGS = set()   # Set các filename cần cancel
+
 
 # ================== CẤU HÌNH ==================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,7 +65,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Ngưỡng phát hiện
 LP_CONF_THRESHOLD = 0.50
 HELMET_CONF_THRESHOLD = 0.35
-NO_HELMET_CONF_THRESHOLD = 0.45
+NO_HELMET_CONF_THRESHOLD = 0.25
 TL_CONF_THRESHOLD = 0.15
 MOTO_TRACK_CONF = 0.25
 
@@ -156,6 +164,56 @@ def has_skin_tone_pixels(crop, threshold=0.05):
 
 
 def parse_and_normalize_plate(raw_text):
+    """
+    Chuẩn hoá biển số VN — ưu tiên series chữ + tail dài (biển mới VN)
+    để tránh regex greedy cướp số 0 của tail vào series.
+    """
+    if not raw_text:
+        return ""
+
+    clean = "".join(c for c in raw_text.upper() if c.isalnum())
+    if not (7 <= len(clean) <= 9):
+        return ""
+
+    # Thử các cấu trúc ưu tiên: tail 5 số TRƯỚC, tail 4 số SAU
+    # (n_letters, has_digit, tail_len)
+    combos = [
+        (2, 0, 5),   # AB-12345   ← ưu tiên nhất
+        (1, 0, 5),   # A-12345
+        (1, 1, 5),   # A1-12345   (VD: 47B3-01230)
+        (2, 1, 4),   # AB1-2345
+        (1, 1, 4),   # A1-2345
+        (2, 0, 4),   # AB-1234    (biển cũ)
+        (1, 0, 4),   # A-1234
+    ]
+
+    for n_letters, has_digit, tail_len in combos:
+        idx = 2 + n_letters + has_digit
+        if idx + tail_len != len(clean):
+            continue
+
+        city = clean[:2]
+        series = clean[2:idx]
+        tail = clean[idx:]
+
+        # Validate
+        if not city.isdigit():
+            continue
+        if not tail.isdigit():
+            continue
+
+        if has_digit:
+            # series = n_letters chữ + 1 số cuối
+            if not (series[-1].isdigit()
+                    and all(c.isalpha() for c in series[:-1])):
+                continue
+        else:
+            if not all(c.isalpha() for c in series):
+                continue
+
+        return f"{city}{series}-{tail}"
+
+    return ""
     """Chuẩn hoá biển số VN — chỉ nhận khi match regex chuẩn."""
     if not raw_text:
         return ""
@@ -316,9 +374,66 @@ def retroactive_update_violation(bike_id, new_plate, lp_crop, frame, bike_box,
         ).start()
 
 
+# ================== PROGRESS + METADATA ==================
+def send_progress(video_filename, frame_current, frame_total, violations_count):
+    """Gửi progress lên backend qua HTTP."""
+    if not video_filename:
+        return
+    try:
+        import requests
+        backend_url = os.getenv("BACKEND_BASE_URL", "http://backend:3000")
+        percent = round(frame_current / frame_total * 100, 1) if frame_total > 0 else 0
+        print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)", flush=True)
+
+        requests.post(
+            f"{backend_url}/api/videos/progress",
+            json={
+                "filename": video_filename,
+                "frame_current": frame_current,
+                "frame_total": frame_total,
+                "violations_count": violations_count,
+                "percent": percent,
+            },
+            timeout=1,
+        )
+    except Exception as e:
+        print(f"  [Progress Error] {e}", flush=True)
+
+def extract_video_metadata(video_path):
+    """Extract metadata video bằng ffprobe."""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height,r_frame_rate,duration',
+            '-of', 'json',
+            video_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        data = json.loads(result.stdout)
+        stream = data.get('streams', [{}])[0]
+        # Parse FPS từ "30/1" → 30
+        fps_raw = stream.get('r_frame_rate', '0/1')
+        if '/' in fps_raw:
+            num, den = fps_raw.split('/')
+            fps = round(int(num) / int(den), 1) if int(den) > 0 else 0
+        else:
+            fps = float(fps_raw)
+        return {
+            'width': stream.get('width', 0),
+            'height': stream.get('height', 0),
+            'fps': fps,
+            'duration': round(float(stream.get('duration', 0)), 2),
+            'size_mb': round(os.path.getsize(video_path) / 1024 / 1024, 2),
+        }
+    except Exception as e:
+        print(f"  [Metadata] Lỗi extract: {e}")
+        return {}
+
+
 # ================== PIPELINE CHÍNH ==================
 
-def run_traffic_system(video_path):
+def run_traffic_system(video_path, video_filename=None):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"--> Đang chạy AI trên: {device} "
                 f"({torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'})")
@@ -354,6 +469,9 @@ def run_traffic_system(video_path):
         logger.error(f"Không thể mở video: '{video_path}'")
         return
 
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    logger.info(f"[Info] Tổng số frame: {total_frames}")
+
     violation_count = 0
     logger.info("[3/3] Bắt đầu quét video...")
 
@@ -361,6 +479,8 @@ def run_traffic_system(video_path):
     bike_plates = {}
     bike_lp_crops = {}
     bike_recorded_violations = {}
+    bike_plate_votes = {}   # ← THÊM DÒNG NÀY
+    
     bike_last_seen = {}
     recorded_plate_violations = set()
     global_recorded_plates = set()
@@ -421,6 +541,16 @@ def run_traffic_system(video_path):
 
         if frame_count % 2 != 0:
             continue
+
+        # ✅ Gửi progress + check cancel mỗi 100 frame
+        if frame_count % 100 == 0:
+            send_progress(video_filename, frame_count, total_frames, violation_count)
+            # Check cancel flag từ backend
+            if video_filename in CANCEL_FLAGS:
+                logger.warning(f"⏹️ Video bị CANCEL bởi user: {video_filename}")
+                CANCEL_FLAGS.discard(video_filename)
+                cap.release()
+                return
 
         # ✅ Update buffer recorder mỗi frame
         video_recorder.add_frame(frame)
@@ -511,26 +641,10 @@ def run_traffic_system(video_path):
                 continue
 
             # 4. ✅ SKIN TONE CHECK — lọc mũ màu
-            mid_y = y1 + int((y2 - y1) * 0.5)   # Chỉ lấy 50% trên
-            head_crop = frame[
-                max(0, y1):min(h_frame, y2),
-                max(0, x1):min(w_frame, x2)
-            ]
-            if not has_skin_tone_pixels(head_crop, threshold=0.04):
-                continue
-            
-            # ✅ DEBUG: Tính skin_ratio thực tế
-            skin_ratio = 0.0
-            if head_crop.size > 0:
-                hsv_crop = cv2.cvtColor(head_crop, cv2.COLOR_BGR2HSV)
-                hc, sc, vc = hsv_crop[:, :, 0], hsv_crop[:, :, 1], hsv_crop[:, :, 2]
-                tot = head_crop.shape[0] * head_crop.shape[1]
-                m1 = (hc >= 0) & (hc <= 35) & (sc >= 20) & (sc <= 180) & (vc >= 40)
-                m2 = (hc >= 160) & (hc <= 180) & (sc >= 20) & (sc <= 180) & (vc >= 40)
-                m3 = (vc > 200) & (sc > 10) & (sc < 100)
-                skin_ratio = np.sum(m1 | m2 | m3) / float(tot + 1e-5)
-            
-            if not has_skin_tone_pixels(head_crop, threshold=0.15):
+            face_y1 = y1 + int((y2 - y1) * 0.35)
+            head_crop = frame[max(0, face_y1):min(h_frame, y2),
+                              max(0, x1):min(w_frame, x2)]
+            if not has_skin_tone_pixels(head_crop, threshold=0.05):
                 continue
 
             no_helmet_dets.append(nh)
@@ -645,7 +759,7 @@ def run_traffic_system(video_path):
             cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2),
                           (255, 165, 0), 2)
 
-            expanded_y1 = max(0, by1 - int((by2 - by1) * 1.0))
+            expanded_y1 = max(0, by1 - int((by2 - by1) * 3.0))
             head_max_y = by1 + int((by2 - by1) * 0.70)
 
             # ---- Cập nhật biển số từ LP assigned ----
@@ -685,20 +799,23 @@ def run_traffic_system(video_path):
                                 bike_id=bike_id, context="track"
                             )
                             if new_str and len(new_str.replace("-", "")) >= 7:
-                                bike_plates[bike_id] = new_str
-                                logger.info(f"[LP Track] ID={bike_id} "
-                                            f"cập nhật biển: {new_str}")
-
-                                retroactive_update_violation(
-                                    bike_id=bike_id,
-                                    new_plate=new_str,
-                                    lp_crop=lp_crop,
-                                    frame=frame,
-                                    bike_box=(bx1, by1, bx2, by2),
-                                    bike_recorded_violations=bike_recorded_violations,
-                                    recorded_plate_violations=recorded_plate_violations,
-                                    OUTPUT_DIR=OUTPUT_DIR,
-                                )
+                                vote = bike_plate_votes.setdefault(bike_id, Counter())
+                                vote[new_str] += 1
+                                top_plate, top_count = vote.most_common(1)[0]
+                                if top_count >= 3:
+                                    bike_plates[bike_id] = top_plate
+                                    logger.info(f"[Vote] ID={bike_id} chốt biển '{top_plate}' "
+                                                f"({top_count} phiếu / tổng {sum(vote.values())})")
+                                    retroactive_update_violation(
+                                        bike_id=bike_id,
+                                        new_plate=top_plate,
+                                        lp_crop=lp_crop,
+                                        frame=frame,
+                                        bike_box=(bx1, by1, bx2, by2),
+                                        bike_recorded_violations=bike_recorded_violations,
+                                        recorded_plate_violations=recorded_plate_violations,
+                                        OUTPUT_DIR=OUTPUT_DIR,
+                                    )
 
             detected_lp_str = bike_plates.get(bike_id, "")
             if detected_lp_str:
@@ -711,8 +828,8 @@ def run_traffic_system(video_path):
             no_helmet_conf = 0.0
             for nh in no_helmet_dets:
                 hx1, hy1, hx2, hy2 = nh["bbox"]
-                if (bx1 - 40 <= hx1 and hx2 <= bx2 + 40
-                        and expanded_y1 <= hy1 and hy2 <= head_max_y):
+                if (bx1 - 200 <= hx1 and hx2 <= bx2 + 200
+                        and expanded_y1 - 100 <= hy1 and hy2 <= head_max_y + 80):
                     has_no_helmet = True
                     no_helmet_conf = nh["conf"]
                     break
@@ -912,11 +1029,189 @@ def run_traffic_system(video_path):
             bike_recorded_violations.pop(bid, None)
             motor_positions_history.pop(bid, None)
             bike_last_seen.pop(bid, None)
+            bike_plate_votes.pop(bid, None)   # ← THÊM DÒNG NÀY
 
     cap.release()
+    if video_filename and total_frames > 0:
+        send_progress(video_filename, total_frames, total_frames, violation_count)
+    
     logger.info(f"[HOÀN THÀNH] Tổng số vi phạm bắt được: {violation_count}")
 
 
+# ================== AUTO VIDEO DISCOVERY + WATCHER ==================
+
+def find_all_videos(video_dir):
+    """Tìm tất cả video trong folder."""
+    if not os.path.isdir(video_dir):
+        os.makedirs(video_dir, exist_ok=True)
+        return []
+        
+    extensions = ('.mp4', '.avi', '.mkv', '.mov', '.webm')
+    videos = []
+    for f in os.listdir(video_dir):
+        full_path = os.path.join(video_dir, f)
+        if os.path.isfile(full_path) and f.lower().endswith(extensions):
+            videos.append(full_path)
+    return sorted(videos)
+
+
+def process_single_video(video_path):
+    """Xử lý 1 video + đánh dấu đã xử lý."""
+    base_name = os.path.basename(video_path)
+    name, ext = os.path.splitext(base_name)
+    
+    # Đánh dấu đang xử lý
+    processing_path = os.path.join(
+        os.path.dirname(video_path),
+        f".processing_{name}{ext}"
+    )
+    
+    try:
+        # Đổi tên đánh dấu
+        os.rename(video_path, processing_path)
+        logger.info(f"\n{'='*70}")
+        logger.info(f"🎬 BẮT ĐẦU XỬ LÝ: {base_name}")
+        logger.info(f"{'='*70}")
+        
+        # Extract metadata TRƯỚC khi xử lý
+        metadata = extract_video_metadata(processing_path)
+        if metadata:
+            logger.info(f"[Metadata] {metadata}")
+        
+        # Chạy AI với filename
+        run_traffic_system(processing_path, video_filename=base_name)
+        
+        # Đổi tên đánh dấu hoàn thành
+        done_dir = os.path.join(os.path.dirname(video_path), "processed")
+        os.makedirs(done_dir, exist_ok=True)
+        done_path = os.path.join(done_dir, base_name)
+        os.rename(processing_path, done_path)
+        
+        # Lưu metadata JSON
+        if metadata:
+            metadata['processed_at'] = datetime.now().isoformat()
+            metadata['filename'] = base_name
+            meta_path = os.path.join(done_dir, f"{base_name}.json")
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            logger.info(f"   → Metadata: {meta_path}")
+        
+        logger.info(f"\n✅ HOÀN THÀNH: {base_name}")
+        logger.info(f"   → Đã di chuyển vào: processed/{base_name}")
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi xử lý {base_name}: {e}")
+        # Đổi lại tên ban đầu nếu lỗi
+        if os.path.exists(processing_path):
+            os.rename(processing_path, video_path)
+
+
+def auto_watcher(video_dir, stop_flag):
+    """
+    Thread tự động watch folder + xử lý video mới.
+    Cứ 5 giây check 1 lần.
+    """
+    processed_cache = set()
+    
+    while not stop_flag["stop"]:
+        try:
+            videos = find_all_videos(video_dir)
+            
+            for video in videos:
+                # Bỏ qua file đã xử lý
+                if video in processed_cache:
+                    continue
+                    
+                # Bỏ qua file tạm
+                if ".processing_" in video:
+                    continue
+                    
+                logger.info(f"🔔 Phát hiện video mới: {os.path.basename(video)}")
+                processed_cache.add(video)
+                process_single_video(video)
+                
+            time.sleep(5)
+            
+        except Exception as e:
+            logger.error(f"Watcher lỗi: {e}")
+            time.sleep(10)
+
+# ================== HTTP SERVER ĐỂ NHẬN CANCEL ==================
+def start_cancel_listener():
+    """Chạy HTTP server nhỏ để nhận cancel request từ backend."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import json as _json
+
+    class CancelHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            if self.path == '/cancel':
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                try:
+                    data = _json.loads(body)
+                    filename = data.get('filename')
+                    if filename:
+                        CANCEL_FLAGS.add(filename)
+                        print(f"  [Cancel] Nhận cancel cho: {filename}", flush=True)
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(b'{"success": true}')
+                        return
+                except Exception as e:
+                    print(f"  [Cancel] Lỗi: {e}", flush=True)
+
+            self.send_response(400)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass   # Tắt log
+
+    server = HTTPServer(('0.0.0.0', 9999), CancelHandler)
+    print("  [Cancel Server] Đang nghe tại port 9999...", flush=True)
+    server.serve_forever()
+
+def start_cancel_listener_thread():
+    """Chạy listener trong thread riêng."""
+    import threading
+    t = threading.Thread(target=start_cancel_listener, daemon=True)
+    t.start()
+
+
 if __name__ == "__main__":
-    video_source = os.getenv("VIDEO_PATH", "0")
-    run_traffic_system(video_source)
+    # Config
+    VIDEO_DIR = os.getenv("VIDEO_DIR", "/app/videos")
+    SINGLE_VIDEO = os.getenv("VIDEO_PATH", "").strip()
+    
+    logger.info(f"\n{'='*70}")
+    logger.info(f"🎥 HỆ THỐNG XỬ LÝ VIDEO GIAO THÔNG")
+    logger.info(f"{'='*70}")
+    logger.info(f"📁 Video folder: {VIDEO_DIR}")
+
+    # ✅ Khởi động cancel listener
+    start_cancel_listener_thread()
+    
+    # Cách 1: Chạy 1 video cụ thể (nếu có VIDEO_PATH)
+    if SINGLE_VIDEO and SINGLE_VIDEO != "0" and os.path.exists(SINGLE_VIDEO):
+        logger.info(f"📹 Chạy video cụ thể: {SINGLE_VIDEO}")
+        logger.info(f"{'='*70}\n")
+        run_traffic_system(SINGLE_VIDEO)
+        logger.info(f"\n✅ HOÀN THÀNH\n")
+        
+    # Cách 2: Tự động watch folder + xử lý tất cả video mới
+    else:
+        os.makedirs(VIDEO_DIR, exist_ok=True)
+        
+        logger.info(f"🔍 Chế độ: AUTO WATCH FOLDER")
+        logger.info(f"→ Cứ 5 giây check folder 1 lần")
+        logger.info(f"→ Copy video vào folder → AI tự chạy")
+        logger.info(f"{'='*70}\n")
+        
+        # Khởi chạy watcher trong thread riêng
+        stop_flag = {"stop": False}
+        
+        try:
+            auto_watcher(VIDEO_DIR, stop_flag)
+        except KeyboardInterrupt:
+            logger.info("\n⏹️ Dừng hệ thống...")
+            stop_flag["stop"] = True

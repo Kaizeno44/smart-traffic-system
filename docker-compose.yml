@@ -43,6 +43,7 @@ services:
       - BACKEND_NOTIFY_URL=http://localhost:3000/api/violations/notify-realtime
     volumes:
       - ./services/backend-api/public:/app/public
+      - ./services/ai-service/videos:/app/videos
     depends_on:
       db:
         condition: service_healthy
@@ -69,9 +70,12 @@ services:
     container_name: smart_traffic_ai
     environment:
       - RABBITMQ_URL=amqp://rabbitmq:5672
-      - VIDEO_PATH=/app/dendo2.mp4
+      - VIDEO_DIR=/app/videos              # ← MỚI
+      - VIDEO_PATH=                        # ← ĐỂ RỖNG
       - YOLO_CONFIG_DIR=/tmp/Ultralytics
       - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+      - BACKEND_URL=http://backend:3000/api/violations
+      - BACKEND_BASE_URL=http://backend:3000
     volumes:
       - ./services/ai-service:/app
       - ./models/paddleocr:/root/.paddleocr
