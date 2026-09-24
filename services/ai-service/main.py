@@ -57,7 +57,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Ngưỡng phát hiện
 LP_CONF_THRESHOLD = 0.50
 HELMET_CONF_THRESHOLD = 0.35
-NO_HELMET_CONF_THRESHOLD = 0.60
+NO_HELMET_CONF_THRESHOLD = 0.45
 TL_CONF_THRESHOLD = 0.15
 MOTO_TRACK_CONF = 0.25
 
@@ -323,7 +323,7 @@ def run_traffic_system(video_path):
     # --- Nạp model ---
     try:
         moto_model = YOLO("yolov8n.pt").to(device)
-        helmet_model = YOLO(os.path.join(MODELS_DIR, "helmet_lp_best.pt")).to(device)
+        helmet_model = YOLO(os.path.join(MODELS_DIR, "helmet_lp_best2.pt")).to(device)
         lp_model = YOLO(os.path.join(MODELS_DIR, "my_lp_model.pt")).to(device)
         tl_model = YOLO("yolov8n.pt").to(device)
         person_model = YOLO("yolov8n.pt").to(device)      # ✅ MỚI — detect người
@@ -509,9 +509,11 @@ def run_traffic_system(video_path):
             # 4. ✅ SKIN TONE CHECK — lọc mũ màu
             mid_y = y1 + int((y2 - y1) * 0.5)   # Chỉ lấy 50% trên
             head_crop = frame[
-                max(0, y1):min(h_frame, mid_y),
+                max(0, y1):min(h_frame, y2),
                 max(0, x1):min(w_frame, x2)
             ]
+            if not has_skin_tone_pixels(head_crop, threshold=0.04):
+                continue
             
             # ✅ DEBUG: Tính skin_ratio thực tế
             skin_ratio = 0.0
@@ -647,11 +649,17 @@ def run_traffic_system(video_path):
                 _, lp = lp_assignments[bike_id]
                 lx1, ly1, lx2, ly2 = lp["bbox"]
 
-                lp_pad = 10
-                crop_x1 = max(0, lx1 - lp_pad)
-                crop_y1 = max(0, ly1 - lp_pad)
-                crop_x2 = min(w_frame, lx2 + lp_pad)
-                crop_y2 = min(h_frame, ly2 + lp_pad)
+                # Tính lề động: tối thiểu 20px, hoặc 15% kích thước biển số để không bao giờ bị cắt cụt số
+                box_w = lx2 - lx1
+                box_h = ly2 - ly1
+                pad_w = max(20, int(box_w * 0.15))
+                pad_h = max(15, int(box_h * 0.15))
+
+                crop_x1 = max(0, lx1 - pad_w)
+                crop_y1 = max(0, ly1 - pad_h)
+                crop_x2 = min(w_frame, lx2 + pad_w)
+                crop_y2 = min(h_frame, ly2 + pad_h)
+
 
                 if (crop_x2 - crop_x1) >= 20 and (crop_y2 - crop_y1) >= 14:
                     lp_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]

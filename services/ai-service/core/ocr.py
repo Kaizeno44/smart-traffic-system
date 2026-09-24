@@ -210,8 +210,9 @@ class LicensePlateOCR:
         if crop_image is None or crop_image.size == 0:
             return "", 0.0
 
-        # 1. Ảnh gốc
-        items_orig = self._run_ocr(crop_image)
+        # 1. Ảnh gốc (thêm viền trắng an toàn tránh mất số mép trái/phải)
+        bordered_orig = cv2.copyMakeBorder(crop_image, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+        items_orig = self._run_ocr(bordered_orig)
         plate_orig, conf_orig = self._extract_plate_from_items(items_orig)
 
         # Early stop nếu ảnh gốc đã tốt
