@@ -95,8 +95,8 @@ const StatisticsCharts = ({ violations }) => {
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
       {/* ===== Chart 1: Vi phạm theo giờ ===== */}
-      <div className="bg-white p-5 rounded-lg shadow-sm border">
-        <h3 className="font-semibold text-gray-700 mb-3">
+      <div className="bg-white p-4 sm:p-5 rounded-lg shadow-sm border min-w-0 overflow-hidden w-full">
+        <h3 className="font-semibold text-gray-700 mb-3 text-sm sm:text-base truncate">
           📊 Vi phạm theo giờ trong ngày
         </h3>
         <ResponsiveContainer width="100%" height={250}>
@@ -111,8 +111,8 @@ const StatisticsCharts = ({ violations }) => {
       </div>
 
       {/* ===== Chart 2: Xu hướng 7 ngày ===== */}
-      <div className="bg-white p-5 rounded-lg shadow-sm border">
-        <h3 className="font-semibold text-gray-700 mb-3">
+      <div className="bg-white p-4 sm:p-5 rounded-lg shadow-sm border min-w-0 overflow-hidden w-full">
+        <h3 className="font-semibold text-gray-700 mb-3 text-sm sm:text-base truncate">
           📈 Xu hướng 7 ngày gần nhất
         </h3>
         <ResponsiveContainer width="100%" height={250}>
@@ -134,8 +134,8 @@ const StatisticsCharts = ({ violations }) => {
       </div>
 
       {/* ===== Chart 3: Tỉ lệ loại vi phạm ===== */}
-      <div className="bg-white p-5 rounded-lg shadow-sm border">
-        <h3 className="font-semibold text-gray-700 mb-3">
+      <div className="bg-white p-4 sm:p-5 rounded-lg shadow-sm border min-w-0 overflow-hidden w-full">
+        <h3 className="font-semibold text-gray-700 mb-3 text-sm sm:text-base truncate">
           🥧 Tỉ lệ loại vi phạm
         </h3>
         <ResponsiveContainer width="100%" height={250}>
@@ -164,8 +164,8 @@ const StatisticsCharts = ({ violations }) => {
       </div>
 
       {/* ===== Chart 4: Top 5 biển số ===== */}
-      <div className="bg-white p-5 rounded-lg shadow-sm border">
-        <h3 className="font-semibold text-gray-700 mb-3">
+      <div className="bg-white p-4 sm:p-5 rounded-lg shadow-sm border min-w-0 overflow-hidden w-full">
+        <h3 className="font-semibold text-gray-700 mb-3 text-sm sm:text-base truncate">
           🏆 Top 5 biển số vi phạm nhiều nhất
         </h3>
         {topPlates.length === 0 ? (

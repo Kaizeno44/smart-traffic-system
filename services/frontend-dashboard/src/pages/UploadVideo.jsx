@@ -17,13 +17,13 @@ const VideoPreviewModal = ({ video, onClose }) => {
         className="bg-white rounded-lg shadow-2xl w-full max-w-3xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex justify-between items-center p-4 border-b">
-          <h3 className="font-bold text-gray-800 truncate">
+        <div className="flex justify-between items-center p-3 sm:p-4 border-b shrink-0">
+          <h3 className="font-bold text-gray-800 truncate pr-2 text-sm sm:text-base">
             🎬 {video.filename}
           </h3>
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
+            className="text-gray-500 hover:text-gray-700 text-2xl leading-none px-2 shrink-0"
           >
             ×
           </button>
@@ -33,8 +33,8 @@ const VideoPreviewModal = ({ video, onClose }) => {
             src={streamUrl}
             controls
             autoPlay
-            className="w-full h-auto"
-            style={{ maxHeight: '70vh' }}
+            className="w-full h-auto object-contain"
+            style={{ maxHeight: '70vh', minHeight: '200px' }}
           >
             Trình duyệt không hỗ trợ video.
           </video>
@@ -279,123 +279,130 @@ const UploadVideo = () => {
 
   // ============ RENDER ============
   return (
-    <div className="p-4 md:p-6">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-800">📹 Upload Video</h2>
-        <p className="text-sm text-gray-500 mt-1">
+    <div className="p-0 sm:p-4 md:p-6 max-w-7xl mx-auto">
+      <div className="mb-4 sm:mb-6 px-2 sm:px-0">
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-800">📹 Upload Video</h2>
+        <p className="text-xs sm:text-sm text-gray-500 mt-1">
           Tải video lên để AI tự động phân tích và phát hiện vi phạm giao thông
         </p>
       </div>
 
       {/* Upload Zone */}
-      <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        onClick={() => !uploading && fileInputRef.current?.click()}
-        className={`border-3 border-dashed rounded-xl p-10 text-center transition cursor-pointer mb-6 ${
-          isDragOver
-            ? 'border-blue-500 bg-blue-50'
-            : 'border-gray-300 bg-gray-50 hover:border-blue-400 hover:bg-blue-50'
-        } ${uploading ? 'opacity-60 cursor-not-allowed' : ''}`}
-        style={{ borderWidth: '3px' }}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="video/*"
-          onChange={(e) => handleUpload(e.target.files?.[0])}
-          className="hidden"
-          disabled={uploading}
-        />
+      <div className="px-2 sm:px-0">
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => !uploading && fileInputRef.current?.click()}
+          className={`border-2 sm:border-3 border-dashed rounded-xl p-6 sm:p-10 text-center transition cursor-pointer mb-6 ${
+            isDragOver
+              ? 'border-blue-500 bg-blue-50'
+              : 'border-gray-300 bg-gray-50 hover:border-blue-400 hover:bg-blue-50'
+          } ${uploading ? 'opacity-60 cursor-not-allowed' : ''}`}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="video/*"
+            onChange={(e) => handleUpload(e.target.files?.[0])}
+            className="hidden"
+            disabled={uploading}
+          />
 
-        {uploading ? (
-          <div>
-            <div className="text-5xl mb-4">📤</div>
-            <p className="text-lg font-semibold text-blue-600 mb-4">
-              Đang upload... {progress}%
-            </p>
-            <div className="w-full max-w-md mx-auto bg-gray-200 rounded-full h-3 overflow-hidden">
-              <div
-                className="bg-blue-600 h-3 rounded-full transition-all duration-300"
-                style={{ width: `${progress}%` }}
-              />
+          {uploading ? (
+            <div>
+              <div className="text-4xl sm:text-5xl mb-4">📤</div>
+              <p className="text-base sm:text-lg font-semibold text-blue-600 mb-4">
+                Đang upload... {progress}%
+              </p>
+              <div className="w-full max-w-md mx-auto bg-gray-200 rounded-full h-2 sm:h-3 overflow-hidden">
+                <div
+                  className="bg-blue-600 h-full rounded-full transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
             </div>
-          </div>
-        ) : (
-          <>
-            <div className="text-5xl mb-4">📹</div>
-            <p className="text-lg font-semibold text-gray-700 mb-2">
-              Kéo thả video vào đây
-            </p>
-            <p className="text-sm text-gray-500 mb-4">
-              hoặc click để chọn file
-            </p>
-            <p className="text-xs text-gray-400">
-              Hỗ trợ: MP4, AVI, MOV, MKV, WEBM — Tối đa 500MB
-            </p>
-          </>
-        )}
+          ) : (
+            <>
+              <div className="text-4xl sm:text-5xl mb-3 sm:mb-4">📹</div>
+              <p className="text-base sm:text-lg font-semibold text-gray-700 mb-1 sm:mb-2">
+                Kéo thả video vào đây
+              </p>
+              <p className="text-xs sm:text-sm text-gray-500 mb-2 sm:mb-4">
+                hoặc click để chọn file
+              </p>
+              <p className="text-[10px] sm:text-xs text-gray-400">
+                Hỗ trợ: MP4, AVI, MOV, MKV, WEBM — Tối đa 500MB
+              </p>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Message */}
       {message && (
-        <div
-          className={`mb-6 p-4 rounded-lg ${
-            message.type === 'success'
-              ? 'bg-green-50 border-l-4 border-green-500 text-green-700'
-              : 'bg-red-50 border-l-4 border-red-500 text-red-700'
-          }`}
-        >
-          {message.text}
+        <div className="px-2 sm:px-0">
+          <div
+            className={`mb-6 p-3 sm:p-4 rounded-lg text-sm sm:text-base ${
+              message.type === 'success'
+                ? 'bg-green-50 border-l-4 border-green-500 text-green-700'
+                : 'bg-red-50 border-l-4 border-red-500 text-red-700'
+            }`}
+          >
+            {message.text}
+          </div>
         </div>
       )}
 
       {/* Filter Bar */}
-      <div className="bg-white rounded-lg shadow p-4 mb-4 flex flex-col sm:flex-row gap-3 items-center">
-        <div className="flex-1 w-full">
-          <input
-            type="text"
-            placeholder="🔍 Tìm kiếm video..."
-            value={filterText}
-            onChange={(e) => setFilterText(e.target.value)}
-            className="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+      <div className="px-2 sm:px-0">
+        <div className="bg-white rounded-lg shadow p-3 sm:p-4 mb-4 sm:mb-6 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+          <div className="flex-1 w-full">
+            <input
+              type="text"
+              placeholder="🔍 Tìm kiếm video..."
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex gap-2">
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="flex-1 sm:flex-none border border-gray-300 rounded px-2 sm:px-3 py-2 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+            >
+              <option value="date_desc">📅 Mới nhất</option>
+              <option value="date_asc">📅 Cũ nhất</option>
+              <option value="name_asc">🔤 Tên A→Z</option>
+              <option value="size_desc">📦 Dung lượng</option>
+            </select>
+            {filterText && (
+              <button
+                onClick={() => setFilterText('')}
+                className="text-xs sm:text-sm text-red-500 hover:text-red-700 font-medium px-2 shrink-0 border border-red-200 rounded hover:bg-red-50 transition"
+              >
+                ✕ Xóa lọc
+              </button>
+            )}
+          </div>
         </div>
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value)}
-          className="border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-        >
-          <option value="date_desc">📅 Mới nhất</option>
-          <option value="date_asc">📅 Cũ nhất</option>
-          <option value="name_asc">🔤 Tên A→Z</option>
-          <option value="size_desc">📦 Dung lượng</option>
-        </select>
-        {filterText && (
-          <button
-            onClick={() => setFilterText('')}
-            className="text-sm text-red-500 hover:text-red-700 font-medium"
-          >
-            ✕ Xóa lọc
-          </button>
-        )}
       </div>
 
       {/* 2 columns */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="px-2 sm:px-0 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         {/* Pending videos */}
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-4 border-b bg-yellow-50">
-            <h3 className="font-semibold text-gray-700">
+        <div className="bg-white rounded-lg shadow flex flex-col h-[400px] sm:h-[500px]">
+          <div className="p-3 sm:p-4 border-b bg-yellow-50 shrink-0">
+            <h3 className="font-semibold text-gray-700 text-sm sm:text-base">
               ⏳ Đang chờ xử lý ({filteredPending.length})
             </h3>
           </div>
-          <div className="p-4 max-h-96 overflow-y-auto">
+          <div className="p-3 sm:p-4 flex-1 overflow-y-auto">
             {loading ? (
-              <p className="text-gray-400 text-center py-4">Đang tải...</p>
+              <p className="text-gray-400 text-center py-4 text-sm">Đang tải...</p>
             ) : filteredPending.length === 0 ? (
-              <p className="text-gray-400 text-center py-4">
+              <p className="text-gray-400 text-center py-4 text-sm">
                 Không có video nào đang chờ
               </p>
             ) : (
@@ -407,24 +414,24 @@ const UploadVideo = () => {
                   return (
                     <li
                       key={v.filename}
-                      className="p-3 bg-gray-50 rounded border hover:bg-gray-100"
+                      className="p-3 bg-gray-50 rounded border hover:bg-gray-100 transition"
                     >
                       <div className="flex justify-between items-start mb-2">
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-gray-800 truncate text-sm">
+                        <div className="flex-1 min-w-0 pr-2">
+                          <p className="font-medium text-gray-800 truncate text-xs sm:text-sm">
                             {isProcessing && '🎬 '}{v.filename}
                           </p>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-[10px] sm:text-xs text-gray-500 mt-1 line-clamp-2">
                             {v.size_mb} MB
                             {isProcessing && ` • Frame ${prog.frame_current}/${prog.frame_total}`}
                             {isProcessing && prog.violations_count > 0 && ` • 🚨 ${prog.violations_count} vi phạm`}
                           </p>
                         </div>
-                        <div className="flex gap-1 flex-shrink-0 ml-2">
+                        <div className="flex gap-2 flex-shrink-0">
                           {isProcessing ? (
                             <button
                               onClick={() => handleCancel(v.filename)}
-                              className="text-orange-500 hover:text-orange-700"
+                              className="text-orange-500 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 p-1.5 rounded transition"
                               title="Hủy xử lý"
                             >
                               ⏹️
@@ -432,7 +439,7 @@ const UploadVideo = () => {
                           ) : (
                             <button
                               onClick={() => handleDelete(v.filename, 'pending')}
-                              className="text-red-500 hover:text-red-700"
+                              className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-1.5 rounded transition"
                               title="Xóa"
                             >
                               🗑️
@@ -442,9 +449,9 @@ const UploadVideo = () => {
                       </div>
 
                       {isProcessing && (
-                        <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                        <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2 overflow-hidden">
                           <div
-                            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                            className="bg-blue-600 h-full rounded-full transition-all duration-300"
                             style={{ width: `${prog.percent}%` }}
                           />
                         </div>
@@ -458,17 +465,17 @@ const UploadVideo = () => {
         </div>
 
         {/* Processed videos */}
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-4 border-b bg-green-50">
-            <h3 className="font-semibold text-gray-700">
+        <div className="bg-white rounded-lg shadow flex flex-col h-[400px] sm:h-[500px]">
+          <div className="p-3 sm:p-4 border-b bg-green-50 shrink-0">
+            <h3 className="font-semibold text-gray-700 text-sm sm:text-base">
               ✅ Đã xử lý ({filteredProcessed.length})
             </h3>
           </div>
-          <div className="p-4 max-h-96 overflow-y-auto">
+          <div className="p-3 sm:p-4 flex-1 overflow-y-auto">
             {loading ? (
-              <p className="text-gray-400 text-center py-4">Đang tải...</p>
+              <p className="text-gray-400 text-center py-4 text-sm">Đang tải...</p>
             ) : filteredProcessed.length === 0 ? (
-              <p className="text-gray-400 text-center py-4">
+              <p className="text-gray-400 text-center py-4 text-sm">
                 Chưa có video nào đã xử lý
               </p>
             ) : (
@@ -479,19 +486,19 @@ const UploadVideo = () => {
                   return (
                     <li
                       key={v.filename}
-                      className="flex justify-between items-start p-3 bg-gray-50 rounded border hover:bg-gray-100"
+                      className="flex justify-between items-start p-3 bg-gray-50 rounded border hover:bg-gray-100 transition"
                     >
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-gray-800 truncate text-sm">
+                      <div className="flex-1 min-w-0 pr-2">
+                        <p className="font-medium text-gray-800 truncate text-xs sm:text-sm">
                           ✅ {v.filename}
                         </p>
-                        <p className="text-xs text-gray-500 mt-1">
+                        <p className="text-[10px] sm:text-xs text-gray-500 mt-1 line-clamp-2">
                           {meta?.duration ? `⏱️ ${meta.duration}s • ` : ''}
                           {meta?.width ? `📹 ${meta.width}×${meta.height} • ` : ''}
                           {meta?.fps ? `${meta.fps} FPS • ` : ''}
                           {v.size_mb} MB
                         </p>
-                        <p className="text-xs text-gray-400 mt-1">
+                        <p className="text-[10px] sm:text-xs text-gray-400 mt-0.5">
                           {new Date(v.processed_at).toLocaleString('vi-VN')}
                         </p>
                       </div>
@@ -499,14 +506,14 @@ const UploadVideo = () => {
                       <div className="flex gap-2 flex-shrink-0">
                         <button
                           onClick={() => setPreviewVideo({ filename: v.filename, type: 'processed' })}
-                          className="text-blue-500 hover:text-blue-700"
+                          className="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-1.5 rounded transition"
                           title="Xem video"
                         >
                           ▶️
                         </button>
                         <button
                           onClick={() => handleDelete(v.filename, 'processed')}
-                          className="text-red-500 hover:text-red-700"
+                          className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-1.5 rounded transition"
                           title="Xóa"
                         >
                           🗑️
@@ -530,10 +537,10 @@ const UploadVideo = () => {
       )}
 
       {/* Refresh button */}
-      <div className="mt-6 text-center">
+      <div className="mt-4 sm:mt-6 text-center pb-4 sm:pb-0">
         <button
           onClick={() => fetchVideos()}
-          className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded text-gray-700 font-medium transition"
+          className="px-4 py-2 bg-white sm:bg-gray-100 border sm:border-none shadow-sm sm:shadow-none hover:bg-gray-200 rounded-lg text-gray-700 text-sm sm:text-base font-medium transition"
         >
           🔄 Làm mới danh sách
         </button>

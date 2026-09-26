@@ -25,6 +25,7 @@ const formatTime = (iso) => {
 const violationNameVN = (type) => {
   if (type === 'RED_LIGHT') return 'Vượt đèn đỏ';
   if (type === 'NO_HELMET') return 'Không đội mũ bảo hiểm';
+  if (type === 'OVERLOAD') return 'Chở quá số người';
   return type;
 };
 
