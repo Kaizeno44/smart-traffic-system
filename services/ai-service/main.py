@@ -79,10 +79,11 @@ LP_RATIO_MAX = 6.0
 TRACK_TIMEOUT_FRAMES = 60
 
 # ✅ CẤU HÌNH OVERLOAD (chở quá số người)
-PERSON_CLASS_ID = 0                    # COCO class 0 = person
-PERSON_CONF_THRESHOLD = 0.40
-MAX_PERSONS_PER_BIKE = 2               # Tối đa 2 người/xe
-OVERLOAD_MIN_OVERLAP_RATIO = 0.30      # Person phải overlap ≥ 30% với bike
+PERSON_CLASS_ID = 0
+PERSON_CONF_THRESHOLD = 0.50          # ↑ từ 0.40 → giảm box yếu
+MAX_PERSONS_PER_BIKE = 2
+OVERLOAD_MIN_OVERLAP_RATIO = 0.45     # ↑ từ 0.30 → chỉ tính người thật sự trên xe
+PERSON_NMS_IOU = 0.45
 
 # Class names biển số
 LP_CLASS_NAMES = {"lp", "license_plate", "license-plate", "plate",
@@ -258,20 +259,78 @@ def read_plate_from_crop(ocr_model, crop, bike_id=None, context="det"):
     return formatted, conf
 
 
+# def count_persons_on_bike(person_boxes, bike_box):
+#     """
+#     Đếm số người trên xe máy.
+#     Person phải: overlap ≥ 30% với bike VÀ tâm person nằm trong bike bbox.
+#     """
+
+#     bx1, by1, bx2, by2 = bike_box
+#     count = 0
+
+#     for pbox in person_boxes:
+#         px1, py1, px2, py2 = pbox
+
+#         # IoU
+#         inter_x1 = max(bx1, px1)
+#         inter_y1 = max(by1, py1)
+#         inter_x2 = min(bx2, px2)
+#         inter_y2 = min(by2, py2)
+
+#         if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+#             continue
+
+#         inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+#         person_area = (px2 - px1) * (py2 - py1)
+#         if person_area <= 0:
+#             continue
+
+#         overlap_ratio = inter_area / person_area
+#         if overlap_ratio < OVERLOAD_MIN_OVERLAP_RATIO:
+#             continue
+
+#         # Tâm person phải nằm trong bike bbox
+#         pcx = (px1 + px2) / 2.0
+#         pcy = (py1 + py2) / 2.0
+#         if bx1 <= pcx <= bx2 and by1 <= pcy <= by2:
+#             count += 1
+
+#     return count
 def count_persons_on_bike(person_boxes, bike_box):
     """
-    Đếm số người trên xe máy.
-    Person phải: overlap ≥ 30% với bike VÀ tâm person nằm trong bike bbox.
+    Đếm số người trên xe máy (đã NMS + điều kiện chặt).
+    - NMS để gộp box trùng của cùng 1 người
+    - overlap ≥ 45% diện tích person với bike
+    - tâm person nằm trong bike bbox (mở rộng nhẹ lên trên vì đầu người thường nhô khỏi bbox xe)
     """
-    bx1, by1, bx2, by2 = bike_box
-    count = 0
+    if len(person_boxes) == 0:
+        return 0
 
-    for pbox in person_boxes:
+    bx1, by1, bx2, by2 = bike_box
+    # Mở rộng nhẹ lên trên để bao đầu người (YOLO motorcycle thường cắt ở vai)
+    bike_h = by2 - by1
+    expand_top = int(bike_h * 0.55)
+    by1_exp = max(0, by1 - expand_top)
+
+    # --- NMS đơn giản theo IoU ---
+    boxes = list(person_boxes)
+    # Sắp xếp theo diện tích giảm dần (box lớn ưu tiên)
+    boxes = sorted(boxes, key=lambda b: (b[2]-b[0])*(b[3]-b[1]), reverse=True)
+    kept = []
+    while boxes:
+        best = boxes.pop(0)
+        kept.append(best)
+        boxes = [
+            b for b in boxes
+            if compute_iou(best, b) < PERSON_NMS_IOU
+        ]
+
+    count = 0
+    for pbox in kept:
         px1, py1, px2, py2 = pbox
 
-        # IoU
         inter_x1 = max(bx1, px1)
-        inter_y1 = max(by1, py1)
+        inter_y1 = max(by1_exp, py1)
         inter_x2 = min(bx2, px2)
         inter_y2 = min(by2, py2)
 
@@ -287,10 +346,10 @@ def count_persons_on_bike(person_boxes, bike_box):
         if overlap_ratio < OVERLOAD_MIN_OVERLAP_RATIO:
             continue
 
-        # Tâm person phải nằm trong bike bbox
+        # Tâm person phải nằm trong vùng xe (đã mở rộng)
         pcx = (px1 + px2) / 2.0
         pcy = (py1 + py2) / 2.0
-        if bx1 <= pcx <= bx2 and by1 <= pcy <= by2:
+        if bx1 <= pcx <= bx2 and by1_exp <= pcy <= by2:
             count += 1
 
     return count
