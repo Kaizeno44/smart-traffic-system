@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # ================== CẤU HÌNH ==================
 # Trong Docker: dùng tên service "backend" — KHÔNG dùng localhost
 # Fallback cho dev local: localhost:3000
-API_URL = os.getenv("BACKEND_URL", "http://backend:3000/api/violations")
+API_URL = os.getenv("BACKEND_URL", "http://localhost:3000/api/violations")
 if not API_URL.rstrip('/').endswith('/api/violations'):
     API_URL = API_URL.rstrip('/') + '/api/violations'
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", "15"))       # giây
@@ -190,8 +190,8 @@ def send_violation_video_update(bike_id, video_path):
     
     # Endpoint cập nhật video theo vehicle_id
     endpoint = os.getenv(
-        "BACKEND_UPDATE_URL",
-        "http://backend:3000/api/violations/update-video"
+        "VIDEO_UPDATE_URL",
+        "http://localhost:3000/api/violations/update-video"
     )
     
     try:

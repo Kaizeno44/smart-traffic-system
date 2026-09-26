@@ -1,4 +1,5 @@
 import os
+os.environ["FLAGS_use_mkldnn"] = "0"
 import re
 import cv2
 import numpy as np
@@ -326,35 +327,13 @@ def send_progress(video_filename, frame_current, frame_total, violations_count):
         return
     try:
         import requests
-        # ✅ URL riêng cho progress — KHÔNG dùng BACKEND_URL (đã có /api/violations)
-        base_url = os.getenv("BACKEND_BASE_URL", "http://backend:3000")
+        # Lấy base URL (Ưu tiên Docker BACKEND_BASE_URL, fallback localhost)
+        base_url = os.getenv("BACKEND_BASE_URL", "http://localhost:3000")
         percent = round(frame_current / frame_total * 100, 1) if frame_total > 0 else 0
         print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)", flush=True)
 
         requests.post(
             f"{base_url}/api/videos/progress",
-            json={
-                "filename": video_filename,
-                "frame_current": frame_current,
-                "frame_total": frame_total,
-                "violations_count": violations_count,
-                "percent": percent,
-            },
-            timeout=1,
-        )
-    except Exception as e:
-        print(f"  [Progress Error] {e}", flush=True)
-    """Gửi progress lên backend qua HTTP."""
-    if not video_filename:
-        return
-    try:
-        import requests
-        backend_url = os.getenv("BACKEND_URL", "http://backend:3000")
-        percent = round(frame_current / frame_total * 100, 1) if frame_total > 0 else 0
-        print(f"  [Progress] {video_filename}: {frame_current}/{frame_total} ({percent}%)", flush=True)
-
-        requests.post(
-            f"{backend_url}/api/videos/progress",
             json={
                 "filename": video_filename,
                 "frame_current": frame_current,
@@ -426,7 +405,7 @@ def run_traffic_system(video_path, video_filename=None):
         return
 
     logger.info("[2/3] Nạp mô hình thành công!")
-    tracker = VehicleTracker(screen_threshold_ratio=0.8)
+    tracker = VehicleTracker(screen_threshold_ratio=0.7)
 
     # Ép kiểu video source
     if isinstance(video_path, str) and video_path.isdigit():
@@ -980,6 +959,24 @@ def run_traffic_system(video_path, video_filename=None):
                     daemon=True,
                 ).start()
 
+            # ========================================================
+            # BỔ SUNG: HIỂN THỊ CỬA SỔ THEO DÕI AI TRÊN MÁY TÍNH
+            # cv2.namedWindow("Smart Traffic Monitoring", cv2.WINDOW_NORMAL)
+            
+            # # Cố định chiều cao cửa sổ cho dễ nhìn (vd: 720p)
+            # disp_h = 720
+            # disp_w = int(disp_h * (w_frame / h_frame))
+            # cv2.resizeWindow("Smart Traffic Monitoring", disp_w, disp_h)
+            
+            # # Hiển thị frame đã được vẽ khung xanh đỏ
+            # cv2.imshow("Smart Traffic Monitoring", annotated_frame)
+            
+            # # Nhấn phím 'q' trên bàn phím để tắt ngang video nếu muốn
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     logger.info("Người dùng đã tắt ngang video.")
+            #     break
+            # ========================================================
+
         # ---- Dọn dẹp track ----
         expired_ids = [bid for bid, last_frame in bike_last_seen.items()
                        if frame_count - last_frame > TRACK_TIMEOUT_FRAMES]
@@ -1140,6 +1137,7 @@ def start_cancel_listener_thread():
 if __name__ == "__main__":
     # Config
     VIDEO_DIR = os.getenv("VIDEO_DIR", "/app/videos")
+    # VIDEO_DIR = os.getenv("VIDEO_DIR", "videos")
     SINGLE_VIDEO = os.getenv("VIDEO_PATH", "").strip()
     
     logger.info(f"\n{'='*70}")

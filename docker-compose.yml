@@ -70,11 +70,13 @@ services:
     container_name: smart_traffic_ai
     environment:
       - RABBITMQ_URL=amqp://rabbitmq:5672
-      - VIDEO_DIR=/app/videos              # ← MỚI
-      - VIDEO_PATH=                        # ← ĐỂ RỖNG
+      - VIDEO_DIR=/app/videos              
+      - VIDEO_PATH=                        
       - YOLO_CONFIG_DIR=/tmp/Ultralytics
       - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
       - BACKEND_URL=http://backend:3000/api/violations
+      - BACKEND_BASE_URL=http://backend:3000                           
+      - VIDEO_UPDATE_URL=http://backend:3000/api/violations/update-video 
     volumes:
       - ./services/ai-service:/app
       - ./models/paddleocr:/root/.paddleocr
