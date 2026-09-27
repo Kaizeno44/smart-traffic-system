@@ -40,11 +40,11 @@ const ExportButtons = ({ violations, stats }) => {
   };
 
   return (
-    <div className="flex gap-2">
+    <div className="flex flex-wrap gap-2 w-full sm:w-auto">
       <button
         onClick={handleExportPDF}
         disabled={exporting !== null}
-        className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium shadow-sm"
+        className="flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium shadow-sm w-full sm:w-auto flex-1 sm:flex-none"
       >
         {exporting === 'pdf' ? (
           <>
@@ -64,7 +64,7 @@ const ExportButtons = ({ violations, stats }) => {
       <button
         onClick={handleExportExcel}
         disabled={exporting !== null}
-        className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium shadow-sm"
+        className="flex items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium shadow-sm w-full sm:w-auto flex-1 sm:flex-none"
       >
         {exporting === 'excel' ? (
           <>

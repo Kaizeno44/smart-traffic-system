@@ -47,7 +47,7 @@ class RedLightDetector:
     def is_crossing_line(self, bbox, track_id, previous_positions):
         """
         Kiểm tra xem xe máy (bbox) có đang cắt qua vạch dừng (stop_line) không.
-        previous_positions là dictionary lưu vị trí tâm xe ở các frame trước để đối chiếu.
+        Chỉ xét trường hợp xe đi từ dưới lên trên vạch.
         """
         x1, y1, x2, y2 = bbox
         
@@ -61,10 +61,10 @@ class RedLightDetector:
         prev_center = previous_positions[track_id]
         
         # Logic giao điểm giữa đoạn thẳng (xe di chuyển) và đoạn thẳng (vạch dừng ảo)
-        # Để đơn giản hóa, nếu xe đi từ trên xuống dưới qua vạch y của stop_line:
         line_y = self.stop_line[0][1] # Giả sử vạch kẻ ngang hoàn toàn
         
-        if prev_center[1] < line_y and current_center_bottom[1] >= line_y:
+        # LOGIC ĐÃ SỬA: Kiểm tra xe đi từ dưới (Y lớn) lên trên vạch (Y nhỏ)
+        if prev_center[1] > line_y and current_center_bottom[1] <= line_y:
             # Cập nhật lại vị trí
             previous_positions[track_id] = current_center_bottom
             return True
