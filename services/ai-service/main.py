@@ -8,6 +8,7 @@ import threading
 from datetime import datetime
 from ultralytics import YOLO
 import torch
+from collections import Counter
 
 from core.ocr import LicensePlateOCR
 from core.red_light_logic import RedLightDetector
@@ -65,9 +66,9 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Ngưỡng phát hiện
 LP_CONF_THRESHOLD = 0.50
 HELMET_CONF_THRESHOLD = 0.35
-NO_HELMET_CONF_THRESHOLD = 0.70
+NO_HELMET_CONF_THRESHOLD = 0.45
 TL_CONF_THRESHOLD = 0.15
-MOTO_TRACK_CONF = 0.25
+MOTO_TRACK_CONF = 0.4
 
 # Filter hình dạng biển số
 LP_MIN_AREA = 800
@@ -78,11 +79,26 @@ LP_RATIO_MAX = 6.0
 
 TRACK_TIMEOUT_FRAMES = 60
 
-# ✅ CẤU HÌNH OVERLOAD (chở quá số người)
+# CẤU HÌNH OVERLOAD (chở quá số người)
+# Luật VN: xe máy tối đa 2 người (lái + 1). > 2 = OVERLOAD.
 PERSON_CLASS_ID = 0                    # COCO class 0 = person
 PERSON_CONF_THRESHOLD = 0.40
-MAX_PERSONS_PER_BIKE = 2               # Tối đa 2 người/xe
-OVERLOAD_MIN_OVERLAP_RATIO = 0.30      # Person phải overlap ≥ 30% với bike
+MAX_PERSONS_PER_BIKE = 2
+OVERLOAD_MIN_OVERLAP_RATIO = 0.25
+PERSON_NMS_IOU = 0.65
+
+# Xác nhận theo thời gian (pipeline skip frame lẻ → 3 hit ≈ 6 frame video)
+NO_HELMET_MIN_HITS = 3
+OVERLOAD_MIN_HITS = 3
+
+HELMET_CLASS_NAMES = {
+    "helmet", "with_helmet", "with-helmet", "helmeted",
+    "co_mu", "comu", "mu_bao_hiem",
+}
+NO_HELMET_CLASS_NAMES = {
+    "no helmet", "no_helmet", "without_helmet", "without-helmet",
+    "no-helmet", "not_helmeted", "khong_mu", "bare_head",
+}
 
 # Class names biển số
 LP_CLASS_NAMES = {"lp", "license_plate", "license-plate", "plate",
@@ -112,58 +128,130 @@ def compute_iou(boxA, boxB):
     return interArea / float(boxAArea + boxBArea - interArea + 1e-5)
 
 
-def is_valid_plate_box(x1, y1, x2, y2):
-    """Lọc bbox theo hình dạng — bỏ bánh xe, ống pô, gương..."""
+def is_valid_plate_box(x1, y1, x2, y2, w_frame=None, h_frame=None):
+    """Lọc bbox theo hình dạng — bỏ bánh xe, ống pô, gương và các box chạm mép viền camera."""
     w, h = x2 - x1, y2 - y1
     if w < LP_MIN_WIDTH or h < LP_MIN_HEIGHT:
         return False
     if w * h < LP_MIN_AREA:
         return False
     ratio = w / float(h + 1e-5)
-    return LP_RATIO_MIN <= ratio <= LP_RATIO_MAX
+    if not (LP_RATIO_MIN <= ratio <= LP_RATIO_MAX):
+        return False
+    # ✅ BỎ QUA BIỂN SỐ CHẠM VIỀN MÀN HÌNH (tránh chụp lúc biển mới ló ra hoặc sắp ra khỏi khung hình)
+    if w_frame is not None and h_frame is not None:
+        margin = 10
+        if x1 <= margin or y1 <= margin or x2 >= w_frame - margin or y2 >= h_frame - margin:
+            return False
+    return True
 
-
-def has_skin_tone_pixels(crop, threshold=0.05):
-    """
-    Kiểm tra vùng ảnh có chứa pixel màu da người không.
-    Mở rộng HSV range để phù hợp nhiều điều kiện ánh sáng.
-    
-    Args:
-        crop: ảnh BGR
-        threshold: tỷ lệ pixel da tối thiểu (giảm từ 0.15 → 0.05)
-    """
+def has_skin_tone_pixels(crop, threshold=0.08):
+    """Kiểm tra vùng ảnh có pixel màu da người (HSV siết lại để tránh nhầm mũ)."""
     if crop is None or crop.size == 0:
         return False
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     h_ch, s_ch, v_ch = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
     total = crop.shape[0] * crop.shape[1]
-    
-    # ✅ MỞ RỘNG range:
-    # - H: 0-35 (thay vì 0-25) — bao gồm da vàng sậm hơn
-    # - S: 20-180 (thay vì 30-170) — bao gồm da nhạt
-    # - V: 40-255 (thay vì 60-255) — bao gồm da trong bóng râm
+
     skin_mask_1 = (
-        (h_ch >= 0) & (h_ch <= 35) &
-        (s_ch >= 20) & (s_ch <= 180) &
-        (v_ch >= 40) & (v_ch <= 255)
+        (h_ch >= 0) & (h_ch <= 25) &
+        (s_ch >= 30) & (s_ch <= 170) &
+        (v_ch >= 60) & (v_ch <= 255)
     )
-    # Wrap-around (H gần 180 = đỏ, có thể là da)
     skin_mask_2 = (
         (h_ch >= 160) & (h_ch <= 180) &
-        (s_ch >= 20) & (s_ch <= 180) &
-        (v_ch >= 40) & (v_ch <= 255)
+        (s_ch >= 30) & (s_ch <= 170) &
+        (v_ch >= 60) & (v_ch <= 255)
     )
-    # ✅ Thêm: pixel sáng chói (da phản chiếu mạnh)
-    bright_skin = (
-        (v_ch > 200) &
-        (s_ch > 10) & (s_ch < 100)
-    )
-    skin_pixels = np.sum(skin_mask_1 | skin_mask_2 | bright_skin)
+    skin_pixels = np.sum(skin_mask_1 | skin_mask_2)
     skin_ratio = skin_pixels / float(total + 1e-5)
     return skin_ratio >= threshold
+def region_has_helmet_color(frame, box, h_frame, w_frame, ratio=0.10):
+    """Nhìn CẢ vùng trên đầu (mũ đỏ nằm trên tóc khi quay sau)."""
+    x1, y1, x2, y2 = map(int, box)
+    bh, bw = max(y2 - y1, 1), max(x2 - x1, 1)
+    ry1 = max(0, y1 - int(bh * 1.6))
+    ry2 = min(h_frame, y1 + int(bh * 0.45))
+    rx1 = max(0, x1 - int(bw * 0.25))
+    rx2 = min(w_frame, x2 + int(bw * 0.25))
+    crop = frame[ry1:ry2, rx1:rx2]
+    if crop is None or crop.size == 0:
+        return False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    total = float(crop.shape[0] * crop.shape[1] + 1e-5)
+    red    = ((H <= 18) | (H >= 160)) & (S >= 25) & (V >= 30)
+    yellow = (H >= 8) & (H <= 45) & (S >= 25) & (V >= 40)
+    white  = (S <= 80) & (V >= 135)
+    green  = (H >= 35) & (H <= 95) & (S >= 25) & (V >= 30)
+    blue   = (H >= 85) & (H <= 140) & (S >= 25) & (V >= 30)
+    return np.sum(red | yellow | white | green | blue) / total >= ratio
 
+
+def helmet_covers_head(helmet_box, nh_box):
+    hx1, hy1, hx2, hy2 = helmet_box
+    nx1, ny1, nx2, ny2 = nh_box
+    hcx, ncx = (hx1 + hx2) / 2.0, (nx1 + nx2) / 2.0
+    nw, nh = max(nx2 - nx1, 1.0), max(ny2 - ny1, 1.0)
+    hw = max(hx2 - hx1, 1.0)
+    if abs(hcx - ncx) > max(nw, hw) * 0.95:
+        return False
+    hcy, ncy = (hy1 + hy2) / 2.0, (ny1 + ny2) / 2.0
+    if hcy > ncy + nh * 0.4:
+        return False
+    return (ny1 - hy2) <= nh * 2.0
 
 def parse_and_normalize_plate(raw_text):
+    """
+    Chuẩn hoá biển số VN — ưu tiên series chữ + tail dài (biển mới VN)
+    để tránh regex greedy cướp số 0 của tail vào series.
+    """
+    if not raw_text:
+        return ""
+
+    clean = "".join(c for c in raw_text.upper() if c.isalnum())
+    if not (7 <= len(clean) <= 9):
+        return ""
+
+    # Thử các cấu trúc ưu tiên: tail 5 số TRƯỚC, tail 4 số SAU
+    # (n_letters, has_digit, tail_len)
+    combos = [
+        (2, 0, 5),   # AB-12345   ← ưu tiên nhất
+        (1, 0, 5),   # A-12345
+        (1, 1, 5),   # A1-12345   (VD: 47B3-01230)
+        (2, 1, 4),   # AB1-2345
+        (1, 1, 4),   # A1-2345
+        (2, 0, 4),   # AB-1234    (biển cũ)
+        (1, 0, 4),   # A-1234
+    ]
+
+    for n_letters, has_digit, tail_len in combos:
+        idx = 2 + n_letters + has_digit
+        if idx + tail_len != len(clean):
+            continue
+
+        city = clean[:2]
+        series = clean[2:idx]
+        tail = clean[idx:]
+
+        # Validate
+        if not city.isdigit():
+            continue
+        if not tail.isdigit():
+            continue
+
+        if has_digit:
+            # series = n_letters chữ + 1 số cuối
+            if not (series[-1].isdigit()
+                    and all(c.isalpha() for c in series[:-1])):
+                continue
+        else:
+            if not all(c.isalpha() for c in series):
+                continue
+
+        return f"{city}{series}-{tail}"
+
+    return ""
     """Chuẩn hoá biển số VN — chỉ nhận khi match regex chuẩn."""
     if not raw_text:
         return ""
@@ -196,7 +284,11 @@ def read_plate_from_crop(ocr_model, crop, bike_id=None, context="det"):
     if not raw_str:
         return "", 0.0
 
-    formatted = parse_and_normalize_plate(raw_str)
+    # Nếu raw_str đã có định dạng hợp lệ dạng XXYY-ZZZZZ (ví dụ 81AR-01082) thì giữ nguyên!
+    if "-" in raw_str and len(raw_str) >= 8:
+        formatted = raw_str
+    else:
+        formatted = parse_and_normalize_plate(raw_str)
     if bike_id is not None:
         status = f"✅ {formatted}" if formatted else "❌ BỎ (format sai)"
         logger.info(f"[OCR {context}] ID={bike_id} raw='{raw_str}' "
@@ -204,42 +296,165 @@ def read_plate_from_crop(ocr_model, crop, bike_id=None, context="det"):
     return formatted, conf
 
 
-def count_persons_on_bike(person_boxes, bike_box):
-    """
-    Đếm số người trên xe máy.
-    Person phải: overlap ≥ 30% với bike VÀ tâm person nằm trong bike bbox.
-    """
-    bx1, by1, bx2, by2 = bike_box
-    count = 0
-
-    for pbox in person_boxes:
-        px1, py1, px2, py2 = pbox
-
-        # IoU
-        inter_x1 = max(bx1, px1)
-        inter_y1 = max(by1, py1)
-        inter_x2 = min(bx2, px2)
-        inter_y2 = min(by2, py2)
-
-        if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+def nms_boxes(boxes, iou_thresh=0.40):
+    """Gộp bbox chồng lên nhau — YOLO person hay bắn 2-3 box cho cùng 1 người."""
+    if boxes is None:
+        return []
+    arr = np.asarray(boxes)
+    if arr.size == 0:
+        return []
+    boxes_list = [tuple(map(float, b[:4])) for b in arr]
+    boxes_list.sort(key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), reverse=True)
+    keep = []
+    for box in boxes_list:
+        if any(compute_iou(box, k) >= iou_thresh for k in keep):
             continue
+        keep.append(box)
+    return keep
 
-        inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+
+def boxes_same_head(box_a, box_b):
+    """True nếu 2 bbox cùng một đầu (mũ nằm trên, mặt nằm dưới → IoU thấp)."""
+    if compute_iou(box_a, box_b) >= 0.15:
+        return True
+
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    acx = (ax1 + ax2) / 2.0
+    bcx = (bx1 + bx2) / 2.0
+    acy = (ay1 + ay2) / 2.0
+    bcy = (by1 + by2) / 2.0
+    aw, ah = max(ax2 - ax1, 1.0), max(ay2 - ay1, 1.0)
+    bw, bh = max(bx2 - bx1, 1.0), max(by2 - by1, 1.0)
+    avg_w = (aw + bw) / 2.0
+    avg_h = (ah + bh) / 2.0
+
+    if abs(acx - bcx) > avg_w * 0.75:
+        return False
+
+    vert_gap = 0.0
+    if ay2 < by1:
+        vert_gap = by1 - ay2
+    elif by2 < ay1:
+        vert_gap = ay1 - by2
+    return vert_gap <= avg_h * 0.55 and abs(acy - bcy) <= avg_h * 1.35
+
+
+def is_in_head_zone(det_bbox, bike_box, x_margin_ratio=0.22, up_ratio=1.35, down_ratio=0.50):
+    """Tâm detection có nằm vùng đầu người lái (phía trên bbox xe) không."""
+    hx1, hy1, hx2, hy2 = det_bbox
+    bx1, by1, bx2, by2 = bike_box
+    bw = bx2 - bx1
+    bh = by2 - by1
+    hcx = (hx1 + hx2) / 2.0
+    hcy = (hy1 + hy2) / 2.0
+    x_pad = bw * x_margin_ratio
+    return (
+        (bx1 - x_pad) <= hcx <= (bx2 + x_pad)
+        and (by1 - bh * up_ratio) <= hcy <= (by1 + bh * down_ratio)
+    )
+
+def detect_heads_on_bike_crop(helmet_model, frame, bike_box, device):
+    """Chạy model mũ trên crop từng xe — video dọc 720x1280 full-frame imgsz=640 hay miss xe thứ 2."""
+    h_frame, w_frame = frame.shape[:2]
+    bx1, by1, bx2, by2 = map(int, bike_box)
+    bw, bh = max(bx2 - bx1, 1), max(by2 - by1, 1)
+    x1 = max(0, bx1 - int(bw * 0.30))
+    x2 = min(w_frame, bx2 + int(bw * 0.30))
+    y1 = max(0, by1 - int(bh * 1.70))
+    y2 = min(h_frame, by2 + int(bh * 0.08))
+    if (x2 - x1) < 24 or (y2 - y1) < 24:
+        return [], []
+    crop = frame[y1:y2, x1:x2]
+    if crop is None or crop.size == 0:
+        return [], []
+    dets = analyze_frame(
+        helmet_model, crop,
+        conf=min(HELMET_CONF_THRESHOLD, 0.25),
+        imgsz=640, device=device,
+    )
+    helmets, no_helmets = [], []
+    for d in dets:
+        dx1, dy1, dx2, dy2 = d["bbox"]
+        mapped = dict(d)
+        mapped["bbox"] = (dx1 + x1, dy1 + y1, dx2 + x1, dy2 + y1)
+        cls_name = mapped["class_lower"]
+        if cls_name in HELMET_CLASS_NAMES:
+            helmets.append(mapped)
+        elif cls_name in NO_HELMET_CLASS_NAMES:
+            no_helmets.append(mapped)
+    return helmets, no_helmets
+
+def assign_persons_to_bikes(person_boxes, bike_entries):
+    """
+    Mỗi người chỉ thuộc 1 xe (greedy theo overlap).
+    Trả về dict bike_id -> số người trên xe.
+    """
+    persons = nms_boxes(person_boxes, iou_thresh=PERSON_NMS_IOU)
+    counts = {int(bid): 0 for bid, _ in bike_entries}
+    if not persons or not bike_entries:
+        return counts
+
+    scores = []
+    for pi, pbox in enumerate(persons):
+        px1, py1, px2, py2 = pbox
+        pcx = (px1 + px2) / 2.0
+        pcy = (py1 + py2) / 2.0
         person_area = (px2 - px1) * (py2 - py1)
         if person_area <= 0:
             continue
 
-        overlap_ratio = inter_area / person_area
-        if overlap_ratio < OVERLOAD_MIN_OVERLAP_RATIO:
+        for bike_id, bike_box in bike_entries:
+            bx1, by1, bx2, by2 = bike_box
+            bw = bx2 - bx1
+            bh = by2 - by1
+            if bw <= 0 or bh <= 0:
+                continue
+
+            # Nới bbox xe lên trên để chứa thân/đầu người lái
+            ex_y1 = by1 - bh * 0.85
+            ex_x1 = bx1 - bw * 0.08
+            ex_x2 = bx2 + bw * 0.08
+
+            if not (ex_x1 <= pcx <= ex_x2 and ex_y1 <= pcy <= by2):
+                continue
+
+            inter_x1 = max(bx1, px1)
+            inter_y1 = max(ex_y1, py1)
+            inter_x2 = min(bx2, px2)
+            inter_y2 = min(by2, py2)
+            if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+                continue
+
+            inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+            overlap_person = inter_area / person_area
+            if overlap_person < OVERLOAD_MIN_OVERLAP_RATIO:
+                continue
+
+            bike_area = bw * bh
+            if person_area > bike_area * 4.0:
+                continue
+            if person_area < bike_area * 0.08:
+                continue
+
+            dist_x = abs(pcx - (bx1 + bx2) / 2.0) / (bw + 1e-5)
+            score = overlap_person - 0.20 * dist_x
+            scores.append((score, pi, int(bike_id)))
+
+    scores.sort(key=lambda x: x[0], reverse=True)
+    used_persons = set()
+    for score, pi, bike_id in scores:
+        if pi in used_persons:
             continue
+        used_persons.add(pi)
+        counts[bike_id] = counts.get(bike_id, 0) + 1
+    return counts
 
-        # Tâm person phải nằm trong bike bbox
-        pcx = (px1 + px2) / 2.0
-        pcy = (py1 + py2) / 2.0
-        if bx1 <= pcx <= bx2 and by1 <= pcy <= by2:
-            count += 1
 
-    return count
+def count_persons_on_bike(person_boxes, bike_box):
+    """Đếm người trên 1 xe — giữ API cũ, dùng NMS + overlap."""
+    dummy = assign_persons_to_bikes(person_boxes, [(0, bike_box)])
+    return dummy.get(0, 0)
 
 
 # ================== RETROACTIVE UPDATE ==================
@@ -426,6 +641,10 @@ def run_traffic_system(video_path, video_filename=None):
     bike_plates = {}
     bike_lp_crops = {}
     bike_recorded_violations = {}
+    bike_plate_votes = {}
+    bike_nh_streak = {}
+    bike_ol_streak = {}
+    bike_nh_history = {}
     bike_last_seen = {}
     recorded_plate_violations = set()
     global_recorded_plates = set()
@@ -539,21 +758,20 @@ def run_traffic_system(video_path, video_filename=None):
             cls_name = det["class_lower"]
             x1, y1, x2, y2 = det["bbox"]
 
-            if cls_name in ["helmet", "with_helmet", "with-helmet"]:
+            if cls_name in HELMET_CLASS_NAMES:
                 helmet_dets.append(det)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
-            elif cls_name in ["no helmet", "no_helmet", "without_helmet",
-                              "without-helmet", "no-helmet"]:
+            elif cls_name in NO_HELMET_CLASS_NAMES:
                 raw_no_helmet_dets.append(det)
             elif cls_name in LP_CLASS_NAMES:
-                if is_valid_plate_box(x1, y1, x2, y2):
+                if is_valid_plate_box(x1, y1, x2, y2, w_frame, h_frame):
                     det["_source"] = "helmet_lp"
                     lp_dets.append(det)
 
         # --- Từ my_lp_model.pt (dedupe IoU > 0.5) ---
         for det in lp_detections_aux:
             x1, y1, x2, y2 = det["bbox"]
-            if not is_valid_plate_box(x1, y1, x2, y2):
+            if not is_valid_plate_box(x1, y1, x2, y2, w_frame, h_frame):
                 continue
             dup = False
             for existing in lp_dets:
@@ -566,37 +784,38 @@ def run_traffic_system(video_path, video_filename=None):
                 det["_source"] = "lp_model"
                 lp_dets.append(det)
 
-        # ============ LỌC NO-HELMET (có skin tone check) ============
+        # ============ LỌC NO-HELMET ============
         for nh in raw_no_helmet_dets:
             x1, y1, x2, y2 = nh["bbox"]
             conf = nh["conf"]
             h_w, h_h = x2 - x1, y2 - y1
             aspect = h_h / float(h_w + 1e-5)
 
-            # 1. Confidence threshold
             if conf < NO_HELMET_CONF_THRESHOLD:
                 continue
-
-            # 2. Aspect ratio
-            if not (0.4 <= aspect <= 3.0):
+            if not (0.5 <= aspect <= 2.4):
                 continue
 
-            # 3. Overlap với helmet detection
-            if any(compute_iou(nh["bbox"], h["bbox"]) > 0.20 for h in helmet_dets):
+            # Cùng một đầu đã có mũ → không phải no-helmet
+            if any(
+                boxes_same_head(nh["bbox"], h["bbox"])
+                or helmet_covers_head(h["bbox"], nh["bbox"])
+                for h in helmet_dets
+            ):
                 continue
 
-            # 4. ✅ SKIN TONE CHECK — lọc mũ màu
-            mid_y = y1 + int((y2 - y1) * 0.5)   # Chỉ lấy 50% trên
-            head_crop = frame[
-                max(0, y1):min(h_frame, mid_y),
-                max(0, x1):min(w_frame, x2)
-            ]
-            
-            if not has_skin_tone_pixels(head_crop, threshold=0.15):
-                logger.info(f"  [SKIN FILTER] Reject no_helmet: "
-                            f"conf={conf:.2f}")
-                continue
+            # Da mặt (lọc gương, đèn, mũ màu bị nhầm class)
+            face_y1 = y1 + int((y2 - y1) * 0.40)
+            head_crop = frame[max(0, face_y1):min(h_frame, y2),
+                              max(0, x1):min(w_frame, x2)]
+            if not has_skin_tone_pixels(head_crop, threshold=0.05):
+                if conf < 0.50:
+                    continue
 
+            # Mũ vàng/trắng/đỏ (như 77N9-1266) hay bị class nhầm no_helmet
+            pad_up = int((y2 - y1) * 0.90)
+            full_head = frame[max(0, y1 - pad_up):min(h_frame, y2),
+                              max(0, x1):min(w_frame, x2)]
             no_helmet_dets.append(nh)
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
 
@@ -695,6 +914,111 @@ def run_traffic_system(video_path, video_filename=None):
             lp_assignments[bike_id] = (lp_idx, lp)
             used_lp_indices.add(lp_idx)
 
+        # ============ GÁN HELMET / NO_HELMET / PERSON CHO TỪNG XE ============
+        bike_entries = []
+        for box, bike_id in zip(boxes, ids):
+            if bike_id is None:
+                continue
+            bike_entries.append((int(bike_id), tuple(map(float, box[:4]))))
+
+        persons_per_bike = assign_persons_to_bikes(person_boxes, bike_entries)
+
+        bike_helmet_count = {bid: 0 for bid, _ in bike_entries}
+        bike_helmet_list = {bid: [] for bid, _ in bike_entries}
+        used_helmet_idx = set()
+        helmet_cands = []
+        for h_idx, h in enumerate(helmet_dets):
+            hx1, hy1, hx2, hy2 = h["bbox"]
+            hcx = (hx1 + hx2) / 2.0
+            for bid, bbox in bike_entries:
+                if not is_in_head_zone(h["bbox"], bbox):
+                    continue
+                bx1, by1, bx2, by2 = bbox
+                dist = abs(hcx - (bx1 + bx2) / 2.0) + abs(hy2 - by1)
+                helmet_cands.append((dist, bid, h_idx, h))
+        helmet_cands.sort(key=lambda x: x[0])
+        for dist, bid, h_idx, h in helmet_cands:
+            if h_idx in used_helmet_idx:
+                continue
+            used_helmet_idx.add(h_idx)
+            if any(boxes_same_head(h["bbox"], existing["bbox"])
+                   for existing in bike_helmet_list.get(bid, [])):
+                continue
+            bike_helmet_count[bid] = bike_helmet_count.get(bid, 0) + 1
+            bike_helmet_list.setdefault(bid, []).append(h)
+
+        no_helmet_assignments = {}
+        nh_bike_candidates = []
+        for nh_idx, nh in enumerate(no_helmet_dets):
+            hx1, hy1, hx2, hy2 = nh["bbox"]
+            nh_cx = (hx1 + hx2) / 2.0
+            for bid, bbox in bike_entries:
+                if not is_in_head_zone(nh["bbox"], bbox):
+                    continue
+                if any(boxes_same_head(nh["bbox"], h["bbox"])
+                       for h in bike_helmet_list.get(bid, [])):
+                    continue
+                bx1, by1, bx2, by2 = bbox
+                dist = abs(nh_cx - (bx1 + bx2) / 2.0) + abs(hy2 - by1)
+                nh_bike_candidates.append((dist, bid, nh_idx, nh))
+
+        nh_bike_candidates.sort(key=lambda x: x[0])
+        used_nh_indices = set()
+        for dist, bid, nh_idx, nh in nh_bike_candidates:
+            if bid in no_helmet_assignments or nh_idx in used_nh_indices:
+                continue
+            no_helmet_assignments[bid] = nh
+            used_nh_indices.add(nh_idx)
+        for bid, bbox in bike_entries:
+            if bid in no_helmet_assignments:
+                continue
+            crop_helmets, crop_nhs = detect_heads_on_bike_crop(
+                helmet_model, frame, bbox, device
+            )
+            for h in crop_helmets:
+                if any(boxes_same_head(h["bbox"], existing["bbox"])
+                       for existing in bike_helmet_list.get(bid, [])):
+                    continue
+                bike_helmet_list.setdefault(bid, []).append(h)
+                bike_helmet_count[bid] = bike_helmet_count.get(bid, 0) + 1
+            picked = None
+            for nh in sorted(crop_nhs, key=lambda d: -d["conf"]):
+                if nh["conf"] < NO_HELMET_CONF_THRESHOLD:
+                    continue
+                # nx1, ny1, nx2, ny2 = map(int, nh["bbox"])
+                # pad_up = int((ny2 - ny1) * 0.90)
+                # nh_crop = frame[max(0, ny1 - pad_up):min(h_frame, ny2),
+                #                 max(0, nx1):min(w_frame, nx2)]
+                if any(boxes_same_head(nh["bbox"], h["bbox"])
+                       for h in bike_helmet_list.get(bid, [])):
+                    continue
+                picked = nh
+                break
+            if bike_helmet_count.get(bid, 0) >= 1:
+                picked = None
+
+            if picked is not None:
+                same_head_helmet = any(
+                    boxes_same_head(
+                        picked["bbox"],
+                        h["bbox"]
+                    )
+                    for h in bike_helmet_list.get(bid, [])
+                )
+
+                if same_head_helmet:
+                    logger.info(
+                        f"[NH-crop] ID={bid} "
+                        f"no_helmet conf={picked['conf']:.2f} "
+                        f"-> bỏ vì cùng đầu đã detect helmet"
+                    )
+                    picked = None
+                else:
+                    no_helmet_assignments[bid] = picked
+                    logger.info(
+                        f"[NH-crop] ID={bid} "
+                        f"✅ nhận no-helmet conf={picked['conf']:.2f}"
+                    )
         # ============ XỬ LÝ TỪNG XE ============
         if len(boxes) == 0:
             continue
@@ -709,7 +1033,7 @@ def run_traffic_system(video_path, video_filename=None):
             cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2),
                           (255, 165, 0), 2)
 
-            expanded_y1 = max(0, by1 - int((by2 - by1) * 1.0))
+            expanded_y1 = max(0, by1 - int((by2 - by1) * 1.5))
             head_max_y = by1 + int((by2 - by1) * 0.70)
 
             # ---- Cập nhật biển số từ LP assigned ----
@@ -717,16 +1041,28 @@ def run_traffic_system(video_path, video_filename=None):
                 _, lp = lp_assignments[bike_id]
                 lx1, ly1, lx2, ly2 = lp["bbox"]
 
-                lp_pad = 10
-                crop_x1 = max(0, lx1 - lp_pad)
-                crop_y1 = max(0, ly1 - lp_pad)
-                crop_x2 = min(w_frame, lx2 + lp_pad)
-                crop_y2 = min(h_frame, ly2 + lp_pad)
+                box_w = lx2 - lx1
+                box_h = ly2 - ly1
+                # Mở rộng mạnh hơn để tránh bbox LP bị cắt mép
+                pad_left   = max(100, int(box_w * 1.00))
+                pad_right  = max(80,  int(box_w * 0.80))
+                pad_top    = max(50,  int(box_h * 0.70))
+                pad_bottom = max(50,  int(box_h * 0.70))
+
+                crop_x1 = max(0, lx1 - pad_left)
+                crop_y1 = max(0, ly1 - pad_top)
+                crop_x2 = min(w_frame, lx2 + pad_right)
+                crop_y2 = min(h_frame, ly2 + pad_bottom)
+
 
                 if (crop_x2 - crop_x1) >= 20 and (crop_y2 - crop_y1) >= 14:
                     lp_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
                     if lp_crop.size > 0:
-                        bike_lp_crops[bike_id] = lp_crop
+                        # ✅ Ưu tiên lưu ảnh không bị cấn sát mép biên (crop_x1 > 0)
+                        # Hoặc nếu chưa có ảnh nào thì mới nhận
+                        is_not_edge_cut = (crop_x1 > 0 and crop_x2 < w_frame)
+                        if bike_id not in bike_lp_crops or is_not_edge_cut:
+                            bike_lp_crops[bike_id] = lp_crop
 
                         current_lp_str = bike_plates.get(bike_id, "")
                         has_solid_plate = bool(
@@ -734,27 +1070,48 @@ def run_traffic_system(video_path, video_filename=None):
                             and len(current_lp_str.replace("-", "")
                                     .replace(" ", "").replace(".", "")) >= 8
                         )
-
                         if not has_solid_plate:
                             new_str, _ = read_plate_from_crop(
                                 ocr_model, lp_crop,
                                 bike_id=bike_id, context="track"
                             )
-                            if new_str and len(new_str.replace("-", "")) >= 7:
-                                bike_plates[bike_id] = new_str
-                                logger.info(f"[LP Track] ID={bike_id} "
-                                            f"cập nhật biển: {new_str}")
+                        else:
+                            new_str = ""
 
-                                retroactive_update_violation(
-                                    bike_id=bike_id,
-                                    new_plate=new_str,
-                                    lp_crop=lp_crop,
-                                    frame=frame,
-                                    bike_box=(bx1, by1, bx2, by2),
-                                    bike_recorded_violations=bike_recorded_violations,
-                                    recorded_plate_violations=recorded_plate_violations,
-                                    OUTPUT_DIR=OUTPUT_DIR,
-                                )
+                        if new_str and len(new_str.replace("-", "")) >= 7:
+                            vote = bike_plate_votes.setdefault(bike_id, Counter())
+                            vote[new_str] += 1
+                            top_plate, top_count = vote.most_common(1)[0]
+                            if top_count >= 3:
+                                # ✅ KIỂM TRA: biển này đã được gán cho track khác chưa?
+                                existing_bike = None
+                                for other_id, other_plate in bike_plates.items():
+                                    if other_id != bike_id and other_plate == top_plate:
+                                        existing_bike = other_id
+                                        break
+
+                                if existing_bike is not None:
+                                    logger.info(f"[Merge] ID={bike_id} trùng biển '{top_plate}' "
+                                                f"với ID={existing_bike} → bỏ qua ID mới")
+                                    bike_recorded_violations[bike_id] = \
+                                        bike_recorded_violations.get(existing_bike, {
+                                            'NO_HELMET': -1, 'RED_LIGHT': -1, 'OVERLOAD': -1,
+                                        }).copy()
+                                    bike_plates[bike_id] = top_plate
+                                else:
+                                    bike_plates[bike_id] = top_plate
+                                    logger.info(f"[Vote] ID={bike_id} chốt biển '{top_plate}' "
+                                                f"({top_count} phiếu / tổng {sum(vote.values())})")
+                                    retroactive_update_violation(
+                                        bike_id=bike_id,
+                                        new_plate=top_plate,
+                                        lp_crop=lp_crop,
+                                        frame=frame,
+                                        bike_box=(bx1, by1, bx2, by2),
+                                        bike_recorded_violations=bike_recorded_violations,
+                                        recorded_plate_violations=recorded_plate_violations,
+                                        OUTPUT_DIR=OUTPUT_DIR,
+                                    )
 
             detected_lp_str = bike_plates.get(bike_id, "")
             if detected_lp_str:
@@ -762,26 +1119,73 @@ def run_traffic_system(video_path, video_filename=None):
                             (bx1, min(h_frame - 10, by2 + 25)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-            # ---- Kiểm tra no-helmet ----
+            # ---- Kiểm tra no-helmet + overload (có helmet-veto + streak) ----
+            n_helmet = bike_helmet_count.get(bike_id, 0)
+            persons_on_bike = persons_per_bike.get(bike_id, 0)
+
             has_no_helmet = False
             no_helmet_conf = 0.0
-            for nh in no_helmet_dets:
-                hx1, hy1, hx2, hy2 = nh["bbox"]
-                if (bx1 - 40 <= hx1 and hx2 <= bx2 + 40
-                        and expanded_y1 <= hy1 and hy2 <= head_max_y):
+            if bike_id in no_helmet_assignments:
+                nh = no_helmet_assignments[bike_id]
+                # Mũ đỏ/vàng trên đầu xe này → không phạt
+                # if region_has_helmet_color(frame, nh["bbox"], h_frame, w_frame):
+                #     has_no_helmet = False
+                # el
+                if any(helmet_covers_head(h["bbox"], nh["bbox"])
+                         for h in bike_helmet_list.get(bike_id, [])):
+                    has_no_helmet = False
+                else:
                     has_no_helmet = True
                     no_helmet_conf = nh["conf"]
-                    break
 
-            # ✅ ĐẾM SỐ NGƯỜI TRÊN XE (OVERLOAD)
-            persons_on_bike = count_persons_on_bike(
-                person_boxes, (bx1, by1, bx2, by2)
+            # Đã thấy class helmet trên xe → không phạt (1 người đội mũ)
+            if n_helmet >= 1:
+                has_no_helmet = False
+
+            if has_no_helmet:
+                bike_nh_streak[bike_id] = bike_nh_streak.get(bike_id, 0) + 1
+            else:
+                bike_nh_streak[bike_id] = 0
+                bike_nh_history[bike_id] = []
+
+            hist = bike_nh_history.setdefault(bike_id, [])
+            hist.append(1 if has_no_helmet else 0)
+            if len(hist) > 6:
+                del hist[0]
+
+            confirmed_no_helmet = (
+                has_no_helmet
+                and sum(hist) >= NO_HELMET_MIN_HITS
             )
+
+            if frame_count % 20 == 0:
+                logger.info(
+                    f"[NH-DECIDE] ID={bike_id} helmets={n_helmet} persons={persons_on_bike} "
+                    f"has_nh={has_no_helmet} confirm={confirmed_no_helmet}"
+                )
+
             has_overload = persons_on_bike > MAX_PERSONS_PER_BIKE
 
-            # Hiển thị số người
+            if has_overload:
+                bike_ol_streak[bike_id] = bike_ol_streak.get(bike_id, 0) + 1
+            else:
+                bike_ol_streak[bike_id] = 0
+
+            confirmed_overload = (
+                has_overload and bike_ol_streak[bike_id] >= OVERLOAD_MIN_HITS
+            )
+
+            if n_helmet > 0:
+                cv2.putText(annotated_frame, "MU:OK",
+                            (bx1, max(20, by1 - 28)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+            elif confirmed_no_helmet:
+                cv2.putText(annotated_frame, "MU:KHONG",
+                            (bx1, max(20, by1 - 28)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+
             if persons_on_bike > 0:
-                color = (0, 0, 255) if has_overload else (0, 255, 0)
+                color = (0, 0, 255) if confirmed_overload else (0, 255, 0)
                 cv2.putText(
                     annotated_frame,
                     f"{persons_on_bike} nguoi",
@@ -804,11 +1208,11 @@ def run_traffic_system(video_path, video_filename=None):
                 }
 
             current_violations = []
-            if has_no_helmet:
+            if confirmed_no_helmet and persons_on_bike >= 1:
                 current_violations.append("NO_HELMET")
             if has_red_light_violation:
                 current_violations.append("RED_LIGHT")
-            if has_overload:
+            if confirmed_overload:
                 current_violations.append("OVERLOAD")
 
             # ---- Ghi nhận vi phạm ----
@@ -845,9 +1249,12 @@ def run_traffic_system(video_path, video_filename=None):
                             bike_id=bike_id, context="save_lp_crop"
                         )
                     else:
-                        tail_y1 = max(0, by1 + int((by2 - by1) * 0.55))
-                        tail_crop = frame[tail_y1:by2,
-                                          max(0, bx1):min(w_frame, bx2)]
+                        bike_w = bx2 - bx1
+                        pad_tail_x = int(bike_w * 0.25) + 25
+                        tail_x1 = max(0, bx1 - pad_tail_x)
+                        tail_x2 = min(w_frame, bx2 + pad_tail_x)
+                        tail_y1 = max(0, by1 + int((by2 - by1) * 0.50))
+                        tail_crop = frame[tail_y1:by2, tail_x1:tail_x2]
                         if tail_crop.size > 0:
                             new_str, _ = read_plate_from_crop(
                                 ocr_model, tail_crop,
@@ -914,9 +1321,13 @@ def run_traffic_system(video_path, video_filename=None):
                 if lp_crop_img is not None and lp_crop_img.size > 0:
                     cv2.imwrite(lp_evidence_path, lp_crop_img)
                 else:
+                    bike_w = bx2 - bx1
+                    pad_tail_x = int(bike_w * 0.25) + 25
+                    tail_x1 = max(0, bx1 - pad_tail_x)
+                    tail_x2 = min(w_frame, bx2 + pad_tail_x)
                     tail_y1 = max(0, by1 + int((by2 - by1) * 0.55))
                     fallback_lp = frame[tail_y1:by2,
-                                        max(0, bx1):min(w_frame, bx2)]
+                                        tail_x1:tail_x2]
                     if fallback_lp.size > 0:
                         cv2.imwrite(lp_evidence_path, fallback_lp)
                     else:
@@ -986,6 +1397,10 @@ def run_traffic_system(video_path, video_filename=None):
             bike_recorded_violations.pop(bid, None)
             motor_positions_history.pop(bid, None)
             bike_last_seen.pop(bid, None)
+            bike_plate_votes.pop(bid, None)
+            bike_nh_streak.pop(bid, None)
+            bike_nh_history.pop(bid, None)
+            bike_ol_streak.pop(bid, None)
 
     cap.release()
     if video_filename and total_frames > 0:
