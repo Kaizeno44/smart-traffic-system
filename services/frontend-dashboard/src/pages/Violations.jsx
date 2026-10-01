@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react';
+import { useSearchParams } from 'react-router-dom';   // ✅ MỚI — nhận query param từ URL
 import ViolationTable from '../components/ViolationTable';
 import ViolationDetailModal from '../components/ViolationDetailModal';
 import { violationService } from '../services/violationService';
@@ -11,6 +12,10 @@ const Violations = () => {
   const [violations, setViolations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // ✅ Filter session từ URL query (?session=...)
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filterSession = searchParams.get('session');   // Đọc từ URL
 
   // --- State filter (lưu vào localStorage) ---
   const [searchTerm, setSearchTerm] = useLocalStorage('filter_search', '');
@@ -130,10 +135,21 @@ const Violations = () => {
     }
   };
 
+  // ✅ Clear session filter (xóa query param trên URL)
+  const clearSessionFilter = () => {
+    const newParams = new URLSearchParams(searchParams);
+    newParams.delete('session');
+    setSearchParams(newParams);
+  };
+
   // ============ FILTER + SORT LOGIC ============
   const filteredViolations = useMemo(() => {
-    // 1. Lọc
     const filtered = violations.filter((item) => {
+      // Filter session từ URL
+      if (filterSession && item.session_id !== filterSession) {
+        return false;
+      }
+
       const matchSearch =
         item.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.id?.toString().includes(searchTerm);
@@ -147,7 +163,6 @@ const Violations = () => {
 
       const matchType = filterType === '' || item.violation_type === filterType;
 
-      // Date range filter
       let matchDate = true;
       if (filterDateFrom || filterDateTo) {
         const itemDateStr = item.violation_time?.split('T')[0];
@@ -162,7 +177,6 @@ const Violations = () => {
       return matchSearch && matchStatus && matchPlate && matchType && matchDate;
     });
 
-    // 2. Sort
     const sorted = [...filtered].sort((a, b) => {
       let aVal, bVal;
 
@@ -179,6 +193,10 @@ const Violations = () => {
           aVal = a.status || '';
           bVal = b.status || '';
           break;
+        case 'fine_min':
+          aVal = parseInt(a.fine_min) || 0;
+          bVal = parseInt(b.fine_min) || 0;
+          break;
         case 'violation_time':
         default:
           aVal = new Date(a.violation_time || 0).getTime();
@@ -193,7 +211,7 @@ const Violations = () => {
 
     return sorted;
   }, [violations, searchTerm, statusFilter, filterPlate, filterType,
-      filterDateFrom, filterDateTo, sortBy, sortOrder]);
+      filterDateFrom, filterDateTo, sortBy, sortOrder, filterSession]);
 
   // ============ HELPERS ============
   const clearFilters = () => {
@@ -203,9 +221,9 @@ const Violations = () => {
     setFilterType('');
     setFilterDateFrom('');
     setFilterDateTo('');
+    clearSessionFilter();
   };
 
-  // Đếm số filter đang active
   const activeFilterCount = useMemo(() => {
     let count = 0;
     if (searchTerm) count++;
@@ -214,10 +232,10 @@ const Violations = () => {
     if (filterType) count++;
     if (filterDateFrom) count++;
     if (filterDateTo) count++;
+    if (filterSession) count++;
     return count;
-  }, [searchTerm, statusFilter, filterPlate, filterType, filterDateFrom, filterDateTo]);
+  }, [searchTerm, statusFilter, filterPlate, filterType, filterDateFrom, filterDateTo, filterSession]);
 
-  // Toggle sort khi click header
   const handleSort = (columnKey) => {
     if (sortBy === columnKey) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
@@ -240,7 +258,6 @@ const Violations = () => {
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 w-full md:w-auto">
-          {/* Search */}
           <div className="relative w-full sm:w-64">
             <input
               type="text"
@@ -259,9 +276,7 @@ const Violations = () => {
             )}
           </div>
 
-          {/* Refresh & Filter Toggle container on mobile */}
           <div className="flex gap-2 w-full sm:w-auto">
-            {/* Refresh */}
             <button
               onClick={fetchViolations}
               className="flex-1 sm:flex-none bg-white sm:bg-gray-100 text-gray-700 px-3 sm:px-4 py-2 rounded border shadow-sm hover:bg-gray-200 transition text-sm sm:text-base font-medium flex justify-center items-center gap-1"
@@ -270,7 +285,6 @@ const Violations = () => {
               🔄 <span className="hidden sm:inline">Làm mới</span>
             </button>
 
-            {/* Filter toggle */}
             <button
               onClick={() => setShowFilter(!showFilter)}
               className={`flex-1 sm:flex-none flex justify-center items-center gap-1 ${
@@ -288,6 +302,30 @@ const Violations = () => {
         </div>
       </div>
 
+      {/* ✅ Banner filter session (chỉ hiển thị khi click từ trang Quản lý phạt) */}
+      {filterSession && (
+        <div className="mx-2 sm:mx-0 mb-4 bg-blue-50 border-l-4 border-blue-500 p-3 rounded flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm flex-wrap">
+            <span className="text-blue-700 font-medium">
+              🎯 Đang lọc theo phiên:
+            </span>
+            <span className="font-mono text-xs bg-blue-100 px-2 py-0.5 rounded text-blue-800 truncate max-w-xs">
+              {filterSession}
+            </span>
+            <span className="text-blue-600 text-xs">
+              ({filteredViolations.length} vi phạm)
+            </span>
+          </div>
+          <button
+            onClick={clearSessionFilter}
+            className="text-blue-600 hover:text-blue-800 font-bold px-2 text-lg shrink-0"
+            title="Xoá filter"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Filter Panel */}
       {showFilter && (
         <div className="bg-white p-4 sm:p-5 rounded-lg shadow mb-4 sm:mb-6 border border-gray-100 mx-2 sm:mx-0">
@@ -304,7 +342,6 @@ const Violations = () => {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-            {/* Status */}
             <div>
               <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
                 Trạng thái
@@ -320,7 +357,6 @@ const Violations = () => {
               </select>
             </div>
 
-            {/* Plate */}
             <div>
               <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
                 Biển số xe
@@ -334,7 +370,6 @@ const Violations = () => {
               />
             </div>
 
-            {/* Type */}
             <div>
               <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
                 Loại vi phạm
@@ -347,10 +382,10 @@ const Violations = () => {
                 <option value="">Tất cả lỗi</option>
                 <option value="NO_HELMET">Không đội mũ bảo hiểm</option>
                 <option value="RED_LIGHT">Vượt đèn đỏ</option>
+                <option value="OVERLOAD">Chở quá số người</option>
               </select>
             </div>
 
-            {/* Sort */}
             <div>
               <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
                 Sắp xếp theo
@@ -374,7 +409,6 @@ const Violations = () => {
             </div>
           </div>
 
-          {/* Date Range */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mt-3 sm:mt-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
             <div>
               <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
@@ -413,7 +447,7 @@ const Violations = () => {
       )}
 
       {/* Table Container */}
-      <div className="px-2 sm:px-0">
+      <div id="violation-table" className="px-2 sm:px-0">
         <div className="bg-white rounded-lg shadow">
           {loading ? (
             <div className="flex flex-col items-center justify-center p-8 sm:p-12 text-gray-500">

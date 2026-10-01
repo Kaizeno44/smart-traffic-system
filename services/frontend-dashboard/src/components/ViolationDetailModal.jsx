@@ -28,11 +28,28 @@ const ViolationDetailModal = ({ violation, onClose }) => {
     }
   };
 
+  // ✅ MỚI — Format mức phạt
+  const formatFine = () => {
+    if (violation.fine_text && violation.fine_text.trim() !== '') {
+      return violation.fine_text;
+    }
+    const min = parseInt(violation.fine_min) || 0;
+    const max = parseInt(violation.fine_max) || 0;
+    if (min === 0 && max === 0) return null;
+    const fmt = (n) => n.toLocaleString('vi-VN') + 'đ';
+    if (min === max) return fmt(min);
+    return `${fmt(min)} - ${fmt(max)}`;
+  };
+
   const violationNameVN = violation.violation_type === 'RED_LIGHT'
     ? 'VƯỢT ĐÈN ĐỎ'
     : violation.violation_type === 'NO_HELMET'
       ? 'KHÔNG ĐỘI MŨ BẢO HIỂM'
-      : violation.violation_type;
+      : violation.violation_type === 'OVERLOAD'
+        ? 'CHỞ QUÁ SỐ NGƯỜI'
+        : violation.violation_type;
+
+  const fineText = formatFine();
 
   return (
     // Overlay
@@ -94,6 +111,32 @@ const ViolationDetailModal = ({ violation, onClose }) => {
               </span>
             </div>
           </div>
+
+          {/* ===== ✅ MỚI — BOX MỨC PHẠT NỔI BẬT ===== */}
+          {fineText && (
+            <div className="mb-5 bg-gradient-to-r from-red-50 to-orange-50 border-l-4 border-red-500 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <div className="text-2xl shrink-0">💰</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs uppercase font-semibold text-red-600 mb-1 tracking-wide">
+                    Mức phạt tiền
+                  </p>
+                  <p className="text-xl sm:text-2xl font-bold text-red-700 mb-2">
+                    {fineText}
+                  </p>
+                  {violation.legal_basis && (
+                    <div className="flex items-start gap-1.5 text-xs text-gray-600">
+                      <span className="shrink-0">📋</span>
+                      <span>
+                        <span className="font-medium">Căn cứ pháp lý:</span>{' '}
+                        {violation.legal_basis}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ===== VIDEO ===== */}
           {violation.video_path && (
