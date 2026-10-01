@@ -12,7 +12,6 @@ from collections import Counter
 
 from core.ocr import LicensePlateOCR
 from core.red_light_logic import RedLightDetector
-from core.lane_detector import LaneDetector          # ✅ MỚI
 from publisher import send_violation, send_violation_video_update
 from core.detection import analyze_frame
 from core.tracking import VehicleTracker
@@ -67,8 +66,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 LP_CONF_THRESHOLD = 0.50
 HELMET_CONF_THRESHOLD = 0.35
 NO_HELMET_CONF_THRESHOLD = 0.45
-TL_CONF_THRESHOLD = 0.15
-MOTO_TRACK_CONF = 0.4
+TL_CONF_THRESHOLD = 0.3
+MOTO_TRACK_CONF = 0.05
 
 # Filter hình dạng biển số
 LP_MIN_AREA = 800
@@ -166,6 +165,7 @@ def has_skin_tone_pixels(crop, threshold=0.08):
     skin_pixels = np.sum(skin_mask_1 | skin_mask_2)
     skin_ratio = skin_pixels / float(total + 1e-5)
     return skin_ratio >= threshold
+
 def region_has_helmet_color(frame, box, h_frame, w_frame, ratio=0.10):
     """Nhìn CẢ vùng trên đầu (mũ đỏ nằm trên tóc khi quay sau)."""
     x1, y1, x2, y2 = map(int, box)
@@ -250,27 +250,6 @@ def parse_and_normalize_plate(raw_text):
                 continue
 
         return f"{city}{series}-{tail}"
-
-    return ""
-    """Chuẩn hoá biển số VN — chỉ nhận khi match regex chuẩn."""
-    if not raw_text:
-        return ""
-    clean = "".join(c for c in raw_text.upper() if c.isalnum())
-    if not (7 <= len(clean) <= 9):
-        return ""
-
-    m = PLATE_REGEX.match(clean)
-    if m:
-        city, series, tail = m.groups()
-        return f"{city}{series}-{tail}"
-
-    m_rev = re.match(r'^(\d{4,5})(\d{2}[A-Z]{1,2}\d?)$', clean)
-    if m_rev:
-        candidate = m_rev.group(2) + m_rev.group(1)
-        m2 = PLATE_REGEX.match(candidate)
-        if m2:
-            city, series, tail = m2.groups()
-            return f"{city}{series}-{tail}"
 
     return ""
 
@@ -607,7 +586,8 @@ def run_traffic_system(video_path, video_filename=None):
         helmet_model = YOLO(os.path.join(MODELS_DIR, "helmet_lp_best.pt")).to(device)
         lp_model = YOLO(os.path.join(MODELS_DIR, "my_lp_model.pt")).to(device)
         tl_model = YOLO("yolov8n.pt").to(device)
-        person_model = YOLO("yolov8n.pt").to(device)      # ✅ MỚI — detect người
+        person_model = YOLO("yolov8n.pt").to(device)      # detect người
+        stop_line_model = YOLO(os.path.join(MODELS_DIR, "stop_line.pt")).to(device) # model vạch dừng
     except Exception as e:
         logger.exception(f"Lỗi nạp model YOLO: {e}")
         return
@@ -648,8 +628,11 @@ def run_traffic_system(video_path, video_filename=None):
     bike_last_seen = {}
     recorded_plate_violations = set()
     global_recorded_plates = set()
+    red_light_violator_history = set()
+    bike_pos_history = {}
 
-    # --- Red-light detector + Lane detector ---
+    # --- Red-light detector + Stop-line detector ---
+    # --- Khởi tạo giá trị vạch dừng mặc định ---
     ret_test, frame_test = cap.read()
     if not ret_test:
         logger.error("Không đọc được frame đầu tiên từ video.")
@@ -657,29 +640,27 @@ def run_traffic_system(video_path, video_filename=None):
         return
 
     h_f, w_f, _ = frame_test.shape
-    ty = int(h_f * tracker.screen_threshold_ratio)
-    default_stop_line = [(0, ty), (w_f, ty)]
-
-    # ✅ Khởi tạo LaneDetector
-    lane_detector = LaneDetector(
-        roi_top_ratio=0.55,
-        roi_bottom_ratio=0.95,
-        min_line_length_ratio=0.25,
-        angle_threshold=8.0,
-        debug=False,
-    )
-
-    # ✅ Thử detect vạch dừng thật trong frame đầu tiên
-    detected_line = lane_detector.detect(frame_test)
-    if detected_line:
-        logger.info(f"[LaneDetector] ✅ Phát hiện vạch dừng thật: {detected_line}")
-        stop_line_coords = list(detected_line)
-    else:
-        logger.warning("[LaneDetector] ❌ Không detect được — dùng vạch ảo (fallback)")
-        stop_line_coords = default_stop_line
-
-    red_light_ai = RedLightDetector(stop_line_coords=stop_line_coords)
+    
+    # Biến lưu trữ tọa độ Y của vạch (khởi tạo ở mức 70% màn hình để dự phòng)
+    h_f, w_f, _ = frame_test.shape
+    
+    # Dùng vạch ảo nằm ngoài màn hình (y = -100) để thư viện không bị lỗi NoneType
+    current_stop_y = -100
+    red_light_ai = RedLightDetector(stop_line_coords=[(0, -100), (w_f, -100)])
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    # ✅ BIẾN QUẢN LÝ VẠCH DỪNG CHU KỲ 5 GIÂY
+    stable_stop_y = -100
+    stable_stop_conf = 0.0
+    stable_sl_box = None
+    stop_y_buffer = []
+    stop_conf_buffer = []
+    stop_box_buffer = []
+    sampling_stop_line = True  # Bắt đầu video sẽ bật chế độ lấy mẫu ngay
+    frames_since_last_update = 0
+    # Video đang skip frame chẵn lẻ (còn ~15 fps), nên 5 giây = 75 frames xử lý
+    UPDATE_INTERVAL_FRAMES = 30 
+    SAMPLE_TARGET = 5 # Lấy 5 frame có vạch để chốt
 
     motor_positions_history = {}
     frame_count = 0
@@ -703,7 +684,7 @@ def run_traffic_system(video_path, video_filename=None):
             break
         frame_count += 1
 
-        if frame_count % 2 != 0:
+        if frame_count % 1 != 0:
             continue
 
         # ✅ Gửi progress + check cancel mỗi 100 frame
@@ -732,13 +713,73 @@ def run_traffic_system(video_path, video_filename=None):
 
         annotated_frame = frame.copy()
         h_frame, w_frame, _ = frame.shape
-        threshold_y = int(h_frame * tracker.screen_threshold_ratio)
 
-        cv2.line(annotated_frame, (0, threshold_y), (w_frame, threshold_y),
-                 (0, 0, 255), 3)
-        cv2.putText(annotated_frame, "Vach Kiem Tra Vi Pham",
-                    (20, threshold_y - 15), cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0, (0, 0, 255), 3)
+        # ============ DETECT STOP LINE ĐỘNG THEO CHU KỲ (5 GIÂY / 1 LẦN) ============
+        frames_since_last_update += 1
+
+        # Kích hoạt lại việc lấy mẫu sau mỗi 5 giây
+        if not sampling_stop_line and frames_since_last_update >= UPDATE_INTERVAL_FRAMES:
+            sampling_stop_line = True
+            stop_y_buffer = []
+            stop_conf_buffer = []
+            stop_box_buffer = []    # <--- Reset buffer khung
+            frames_since_last_update = 0
+
+        # CHỈ gọi AI YOLO quét vạch khi đang trong thời gian lấy mẫu
+        if sampling_stop_line:
+            sl_results = stop_line_model.predict(
+                frame, classes=[1], conf=0.41, device=device, verbose=False
+            )[0]
+            
+            if sl_results.boxes is not None and len(sl_results.boxes) > 0:
+                sl_box = sl_results.boxes.xyxy[0].cpu().numpy()
+                found_y = int((sl_box[1] + sl_box[3]) / 2)
+                found_conf = float(sl_results.boxes.conf[0].cpu().numpy())
+                
+                stop_y_buffer.append(found_y)
+                stop_conf_buffer.append(found_conf)
+                stop_box_buffer.append(sl_box)  # <--- Lưu khung vào buffer
+                
+                # ✅ VẼ NGAY KHUNG AI ĐANG NHÌN THẤY REALTIME (Màu Hồng)
+                sx1, sy1, sx2, sy2 = map(int, sl_box)
+                cv2.rectangle(annotated_frame, (sx1, sy1), (sx2, sy2), (255, 0, 255), 2)
+                cv2.putText(annotated_frame, f"AI-Box: {found_conf:.2f}", (sx1, sy1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+            
+            # Đóng chốt vạch nếu đã thu thập đủ 5 mẫu, hoặc bị quá giờ
+            if len(stop_y_buffer) >= SAMPLE_TARGET or frames_since_last_update > 20:
+                if len(stop_y_buffer) > 0:
+                    stable_stop_y = int(np.median(stop_y_buffer))
+                    stable_stop_conf = float(np.median(stop_conf_buffer))
+                    stable_sl_box = stop_box_buffer[-1]  # <--- Lấy khung cuối cùng làm chuẩn
+                    logger.info(f"[StopLine] Đã chốt vạch mới tại Y={stable_stop_y} (conf: {stable_stop_conf:.2f})")
+                
+                sampling_stop_line = False
+                frames_since_last_update = 0
+
+        # Cập nhật vạch kiểm tra thực tế
+        current_stop_y = stable_stop_y
+        
+        if current_stop_y > 0:
+            stop_line_coords = [(0, current_stop_y), (w_frame, current_stop_y)]
+            red_light_ai.stop_line_coords = stop_line_coords
+            
+            # Vẽ đường kẻ ngang cắt toàn màn hình
+            line_color = (0, 165, 255) if sampling_stop_line else (0, 0, 255)
+            cv2.line(annotated_frame, (0, current_stop_y), (w_frame, current_stop_y), line_color, 3)
+            status_text = " (Updating...)" if sampling_stop_line else f" (Conf: {stable_stop_conf:.2f})"
+            cv2.putText(annotated_frame, "Vach Kiem Tra AI" + status_text,
+                        (20, current_stop_y - 15), cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0, line_color, 3)
+                        
+            # ✅ VẼ CỐ ĐỊNH KHUNG MÀ AI ĐÃ CHỐT KHI ĐANG "NGỦ" (Màu Cam)
+            if not sampling_stop_line and stable_sl_box is not None:
+                sx1, sy1, sx2, sy2 = map(int, stable_sl_box)
+                cv2.rectangle(annotated_frame, (sx1, sy1), (sx2, sy2), (0, 165, 255), 2) 
+                cv2.putText(annotated_frame, f"Stop-Line: {stable_stop_conf:.2f}", (sx1, sy1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+        else:
+            red_light_ai.stop_line_coords = [(0, -100), (w_frame, -100)]
 
         # ============ DETECT: HELMET + LP ============
         helmet_detections = analyze_frame(helmet_model, frame,
@@ -850,36 +891,90 @@ def run_traffic_system(video_path, video_filename=None):
                                if tl_results.boxes is not None else [])
 
         is_red = False
-        red_light_violator_ids = []
+        
+        # 1. AI luôn phải quan sát đèn giao thông trước tiên
+        for tl_box in traffic_light_boxes:
+            tx1, ty1, tx2, ty2 = map(int, tl_box)
+            tl_crop = frame[ty1:ty2, tx1:tx2]
+            if red_light_ai.is_light_red(tl_crop):
+                is_red = True
+                break
+
+        # ✅ VẼ VÙNG ĐỎ (RED ZONE) LÊN MÀN HÌNH TRỰC QUAN
+        if current_stop_y > 0:
+            # Tọa độ bẫy: 150px phía TRÊN vạch, 20px phía DƯỚI vạch (để trừ hao bánh xe)
+            trap_y1 = current_stop_y - 150
+            trap_y2 = current_stop_y + 20
+            
+            # Chỉ kích hoạt Vùng Đỏ khi đèn đang ĐỎ
+            if is_red:
+                # Tạo hiệu ứng nền đỏ bán trong suốt (để không che khuất xe)
+                overlay = annotated_frame.copy()
+                cv2.rectangle(overlay, (0, trap_y1), (w_frame, trap_y2), (0, 0, 255), -1)
+                cv2.addWeighted(overlay, 0.25, annotated_frame, 0.75, 0, annotated_frame)
+                
+                # Kẻ viền và hiển thị cảnh báo
+                cv2.rectangle(annotated_frame, (0, trap_y1), (w_frame, trap_y2), (0, 0, 255), 2)
+                cv2.putText(annotated_frame, "VUNG DO (CAM VUOT)", (10, trap_y1 + 25), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
         boxes = np.array([])
         ids = []
+        confs = []
 
+        # 2. Xử lý xe máy vượt vạch
         if moto_results.boxes is not None and len(moto_results.boxes) > 0:
             boxes = moto_results.boxes.xyxy.cpu().numpy()
             ids = (moto_results.boxes.id.int().cpu().numpy()
                    if moto_results.boxes.id is not None
                    else [None] * len(boxes))
-
-            for tl_box in traffic_light_boxes:
-                tx1, ty1, tx2, ty2 = map(int, tl_box)
-                tl_crop = frame[ty1:ty2, tx1:tx2]
-                if red_light_ai.is_light_red(tl_crop):
-                    is_red = True
-                    break
+            confs = moto_results.boxes.conf.cpu().numpy()
 
             for bbox, track_id in zip(boxes, ids):
                 if track_id is None:
                     continue
-                if red_light_ai.is_crossing_line(bbox, track_id,
-                                                 motor_positions_history):
-                    if is_red:
-                        red_light_violator_ids.append(track_id)
+                
+                bx1, by1, bx2, by2 = map(int, bbox)
+                
+                # ✅ 1. Cập nhật lịch sử vị trí (X và Y) để phân tích hướng đi chính xác
+                cx = int((bx1 + bx2) / 2) # Tâm X của xe
+                hist = bike_pos_history.setdefault(track_id, [])
+                hist.append((cx, by2))
+                
+                if len(hist) > 10:  
+                    hist.pop(0)
 
-            for box in tl_results.boxes:
-                tx1, ty1, tx2, ty2 = map(int, box.xyxy[0].cpu().numpy())
+                # ✅ 2. Bắt vi phạm Vùng Đỏ + Lọc xe tạt ngang
+                if current_stop_y > 0 and is_red:
+                    if trap_y1 <= by2 <= trap_y2:
+                        if len(hist) >= 3:
+                            old_x, old_y = hist[0]
+                            
+                            # Tính quãng đường di chuyển theo X (ngang) và Y (dọc)
+                            dx = abs(cx - old_x)
+                            dy = old_y - by2  # dy dương = xe đi tiến ra xa camera
+                            
+                            # ĐIỀU KIỆN CHUẨN KÉP:
+                            # 1. dy > 10: Xe phải tiến lên phía trước một đoạn rõ rệt (loại trừ khung AI rung lắc)
+                            # 2. dy > dx * 0.8: Quãng đường tiến lên (dọc) phải áp đảo quãng đường tạt ngang
+                            if dy > 10 and dy > dx * 0.8:
+                                red_light_violator_history.add(track_id)
+
+        # 3. Vẽ khung cho tất cả các đèn giao thông tìm thấy
+        if tl_results.boxes is not None:
+            for i in range(len(tl_results.boxes)):
+                # Lấy tọa độ và conf trực tiếp từ mảng kết quả của YOLO
+                tx1, ty1, tx2, ty2 = map(int, tl_results.boxes.xyxy[i].cpu().numpy())
+                tl_conf = float(tl_results.boxes.conf[i].cpu().numpy()) # <--- Lấy conf
+                
                 box_color = (0, 0, 255) if is_red else (0, 255, 0)
                 cv2.rectangle(annotated_frame, (tx1, ty1), (tx2, ty2), box_color, 2)
+                
+                # <--- Vẽ text conf nằm ngay trên hộp đèn giao thông
+                cv2.putText(annotated_frame, f"{tl_conf:.2f}", (tx1, max(20, ty1 - 8)), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
 
+        # ✅ THÊM LẠI ĐOẠN NÀY ĐỂ HIỂN THỊ CHỮ TRÊN GÓC TRÁI MÀN HÌNH
         light_status = "RED LIGHT" if is_red else "GREEN LIGHT"
         light_color = (0, 0, 255) if is_red else (0, 255, 0)
         cv2.putText(annotated_frame, f"TRAFFIC LIGHT: {light_status}",
@@ -1023,7 +1118,8 @@ def run_traffic_system(video_path, video_filename=None):
         if len(boxes) == 0:
             continue
 
-        for box, bike_id in zip(boxes, ids):
+        # ✅ Thêm 'conf' vào vòng lặp zip
+        for box, bike_id, conf in zip(boxes, ids, confs):
             if bike_id is None:
                 continue
             bike_id = int(bike_id)
@@ -1032,6 +1128,11 @@ def run_traffic_system(video_path, video_filename=None):
             bx1, by1, bx2, by2 = map(int, box)
             cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2),
                           (255, 165, 0), 2)
+                          
+            # ✅ Vẽ thông số ID và conf ở góc trên bên trong khung xe máy
+            cv2.putText(annotated_frame, f"ID:{bike_id} | {conf:.2f}", 
+                        (bx1 + 4, by1 + 16), cv2.FONT_HERSHEY_SIMPLEX, 
+                        0.55, (255, 165, 0), 2)
 
             expanded_y1 = max(0, by1 - int((by2 - by1) * 1.5))
             head_max_y = by1 + int((by2 - by1) * 0.70)
@@ -1194,12 +1295,17 @@ def run_traffic_system(video_path, video_filename=None):
                     0.6, color, 2,
                 )
 
-            is_near_threshold = (by2 >= threshold_y - 40)
+            # ✅ Kiểm tra điều kiện tiệm cận với tọa độ vạch AI (động theo frame)
+            # ✅ Tiệm cận vạch AI để kích hoạt lưu vi phạm. 
+            # Mở rộng biên độ chụp ảnh (từ vạch lùi về sau 150 pixel và tiến lên trước 50 pixel)
+            if current_stop_y > 0:
+                is_near_threshold = (current_stop_y - 150 <= by2 <= current_stop_y + 50)
+            else:
+                is_near_threshold = (by2 >= h_frame - 100)
             clean_lp = (detected_lp_str.replace(" ", "").replace("-", "")
                         if detected_lp_str else "")
             has_valid_lp = len(clean_lp) >= 7
-            has_red_light_violation = (bike_id in red_light_violator_ids)
-
+            has_red_light_violation = (bike_id in red_light_violator_history)
             if bike_id not in bike_recorded_violations:
                 bike_recorded_violations[bike_id] = {
                     'NO_HELMET': -1,
@@ -1401,6 +1507,8 @@ def run_traffic_system(video_path, video_filename=None):
             bike_nh_streak.pop(bid, None)
             bike_nh_history.pop(bid, None)
             bike_ol_streak.pop(bid, None)
+            red_light_violator_history.discard(bid)
+            bike_pos_history.pop(bid, None)
 
     cap.release()
     if video_filename and total_frames > 0:
@@ -1471,10 +1579,18 @@ def process_single_video(video_path):
         logger.info(f"   → Đã di chuyển vào: processed/{base_name}")
         
     except Exception as e:
+        import traceback
         logger.error(f"❌ Lỗi xử lý {base_name}: {e}")
-        # Đổi lại tên ban đầu nếu lỗi
+        logger.error(traceback.format_exc()) # In ra dòng code bị lỗi cụ thể
+        
+        # Cố gắng dọn dẹp bộ nhớ OpenCV để nhả file video bị kẹt
+        cv2.destroyAllWindows()
+        
         if os.path.exists(processing_path):
-            os.rename(processing_path, video_path)
+            try:
+                os.rename(processing_path, video_path)
+            except Exception as ex:
+                logger.error(f"Không thể đổi tên file (vẫn kẹt bộ nhớ), vui lòng khởi động lại Terminal: {ex}")
 
 
 def auto_watcher(video_dir, stop_flag):
