@@ -1,19 +1,25 @@
 import os
+
 import time
+
 import logging
+
 import requests
+
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# ================== CẤU HÌNH ==================
-# Trong Docker: dùng tên service "backend" — KHÔNG dùng localhost
-# Fallback cho dev local: localhost:3000
 API_URL = os.getenv("BACKEND_URL", "http://localhost:3000/api/violations")
+
 if not API_URL.rstrip('/').endswith('/api/violations'):
+
     API_URL = API_URL.rstrip('/') + '/api/violations'
+
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", "15"))       # giây
+
 API_MAX_RETRIES = int(os.getenv("API_MAX_RETRIES", "2"))
+
 API_RETRY_DELAY = float(os.getenv("API_RETRY_DELAY", "1.5"))  # giây
 
 
@@ -63,10 +69,15 @@ def send_violation(
     plate_image_path: Optional[str] = None,
     video_path: Optional[str] = None,
     vehicle_type: str = "Xe may",
+    # ✅ MỚI — Thông tin mức phạt
+    fine_min: int = 0,
+    fine_max: int = 0,
+    fine_text: str = "",
+    legal_basis: str = "",
+    session_id: str = "",
 ) -> bool:
     """
     Gửi dữ liệu vi phạm + hình ảnh lên Backend Node.js.
-
     Returns:
         True nếu gửi thành công (HTTP 2xx), False nếu thất bại.
     """
@@ -84,7 +95,14 @@ def send_violation(
         "violation_type": violation_type,
         "confidence": float(confidence),
         "timestamp": str(timestamp),
+        # ✅ MỚI — Thông tin mức phạt
+        "fine_min": int(fine_min or 0),
+        "fine_max": int(fine_max or 0),
+        "fine_text": fine_text or "",
+        "legal_basis": legal_basis or "",
+        "session_id": session_id or "",
     }
+
     if light_status:
         data["light_status"] = light_status
 
@@ -93,25 +111,31 @@ def send_violation(
     opened_files = []   # để đóng trong finally
 
     pano_f = _open_file(image_path)
+
     if pano_f:
         files["panorama_image"] = pano_f
         opened_files.append(pano_f)
 
     lp_f = _open_file(plate_image_path)
+
     if lp_f:
         files["license_plate_image"] = lp_f
         opened_files.append(lp_f)
 
     vid_f = _open_file(video_path)
+
     if vid_f:
         files["violation_video"] = vid_f
         opened_files.append(vid_f)
 
     # ---- Gửi với retry ----
     logger.info(f"[Publisher] Gửi vi phạm ID={vehicle_id} | Biển: {plate_display} "
-                f"| Loại: {violation_type} | Files: {list(files.keys())}")
+                f"| Loại: {violation_type} | Phạt: {fine_text or 'N/A'} "
+                f"| Session: {session_id or 'N/A'} "
+                f"| Files: {list(files.keys())}")
 
     last_error = None
+
     try:
         for attempt in range(1, API_MAX_RETRIES + 1):
             try:
@@ -138,6 +162,7 @@ def send_violation(
                     f"[Publisher] ⚠️ Server trả HTTP {resp.status_code} "
                     f"(lần {attempt}/{API_MAX_RETRIES}): {_format_response_error(resp)}"
                 )
+
                 last_error = f"HTTP {resp.status_code}"
 
                 # 4xx (client error) → không retry, trừ 408/429
@@ -147,12 +172,14 @@ def send_violation(
             except requests.exceptions.Timeout as e:
                 last_error = f"Timeout: {e}"
                 logger.warning(f"[Publisher] Timeout lần {attempt}/{API_MAX_RETRIES}")
+
             except requests.exceptions.ConnectionError as e:
                 last_error = f"ConnectionError: {e}"
                 logger.warning(
                     f"[Publisher] Không kết nối được backend "
                     f"(lần {attempt}/{API_MAX_RETRIES}) — URL: {API_URL}"
                 )
+
             except requests.exceptions.RequestException as e:
                 last_error = str(e)
                 logger.warning(f"[Publisher] Request lỗi: {e}")
@@ -165,6 +192,7 @@ def send_violation(
             f"[Publisher] ❌ Gửi thất bại sau {API_MAX_RETRIES} lần "
             f"| ID={vehicle_id} Biển={plate_display} | Lỗi cuối: {last_error}"
         )
+
         return False
 
     except Exception as e:
@@ -179,47 +207,60 @@ def send_violation(
             except Exception:
                 pass
 
+
 def send_violation_video_update(bike_id, video_path):
     """
     Gửi cập nhật video cho vi phạm đã có.
+
     Gọi sau khi recorder ghi xong clip (2 giây sau vi phạm).
     """
+
     import requests
+
     if not os.path.exists(video_path):
         return False
-    
+
     # Endpoint cập nhật video theo vehicle_id
     endpoint = os.getenv(
         "VIDEO_UPDATE_URL",
         "http://localhost:3000/api/violations/update-video"
     )
-    
+
     try:
         with open(video_path, 'rb') as f:
             files = {'violation_video': (os.path.basename(video_path), f, 'video/mp4')}
             data = {'vehicle_id': str(bike_id)}
-            
-            resp = requests.post(endpoint, data=data, files=files, timeout=30)
-            
+
+            resp = requests.post(
+                endpoint,
+                data=data,
+                files=files,
+                timeout=30
+            )
+
             if 200 <= resp.status_code < 300:
                 print(f"[Publisher] ✅ Gửi video ID={bike_id} thành công (HTTP {resp.status_code})")
                 return True
             else:
                 print(f"[Publisher] ⚠️ Server trả {resp.status_code}: {resp.text[:200]}")
                 return False
+
     except Exception as e:
         print(f"[Publisher] ❌ Lỗi gửi video ID={bike_id}: {e}")
         return False
 
 
 # ================== SELF-TEST (chạy trực tiếp) ==================
+
 if __name__ == "__main__":
     # Test nhanh: python publisher.py
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
     print(f"API_URL = {API_URL}")
+
     print(f"Timeout = {API_TIMEOUT}s, Retries = {API_MAX_RETRIES}")
 
     ok = send_violation(
@@ -229,5 +270,10 @@ if __name__ == "__main__":
         confidence=0.92,
         timestamp="2026-09-18T12:00:00",
         light_status="red",
+        fine_min=4_000_000,
+        fine_max=6_000_000,
+        fine_text="4.000.000đ - 6.000.000đ",
+        legal_basis="Nghị định 168/2024/NĐ-CP, Điều 7, Khoản 7, Điểm c",
     )
+
     print("Kết quả:", "✅ OK" if ok else "❌ FAIL")

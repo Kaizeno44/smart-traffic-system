@@ -5,6 +5,7 @@ import MainLayout from './layouts/MainLayout';
 import Dashboard from './pages/Dashboard';
 import Violations from './pages/Violations';
 import UploadVideo from './pages/UploadVideo';
+import PenaltyManagement from './pages/PenaltyManagement';   // ✅ MỚI
 
 // 1. Tao Context de chia se ket noi Socket cho toan bo cac trang
 export const SocketContext = createContext();
@@ -35,6 +36,7 @@ function App() {
             <Route index element={<Dashboard />} />
             <Route path="violations" element={<Violations />} />
             <Route path="upload" element={<UploadVideo />} />
+            <Route path="penalty" element={<PenaltyManagement />} />  {/* ✅ MỚI */}
             {/* them cac route khac vao day sau */}
           </Route>
         </Routes>

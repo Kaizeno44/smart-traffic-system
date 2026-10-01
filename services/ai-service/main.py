@@ -113,6 +113,94 @@ VIOLATION_NAME_MAP = {
     "OVERLOAD": "CHỞ QUÁ SỐ NGƯỜI",
 }
 
+# ================== MỨC PHẠT THEO NGHỊ ĐỊNH 168/2024/NĐ-CP ==================
+# Căn cứ pháp lý: Nghị định 168/2024/NĐ-CP ngày 26/12/2024
+# Hiệu lực: từ 01/01/2025 (Điều 53)
+# Áp dụng cho: XE MÔ TÔ, XE GẮN MÁY (Điều 7)
+#
+# ⚠️ Lưu ý: Mức phạt có thể thay đổi theo quy định mới. Kiểm tra lại trước khi
+#           dùng chính thức trong môi trường sản xuất.
+VIOLATION_FINE_MAP = {
+    "RED_LIGHT": {
+        "min": 4_000_000,
+        "max": 6_000_000,
+        "legal_basis": "Điểm c khoản 7 Điều 7 Nghị định 168/2024/NĐ-CP",
+    },
+    "NO_HELMET": {
+        "min": 400_000,
+        "max": 600_000,
+        "legal_basis": "Điểm h khoản 2 Điều 7 Nghị định 168/2024/NĐ-CP",
+    },
+    "OVERLOAD": {
+        "min": 600_000,
+        "max": 800_000,
+        "legal_basis": "Điểm b khoản 3 Điều 7 Nghị định 168/2024/NĐ-CP",
+    },
+    "PHONE_USE": {
+        "min": 800_000,
+        "max": 1_000_000,
+        "legal_basis": "Chưa có quy định riêng cho xe máy trong Nghị định 168/2024/NĐ-CP",
+    },
+    "WRONG_LANE": {
+        "min": 400_000,
+        "max": 600_000,
+        "legal_basis": "Điểm d khoản 3 Điều 7 Nghị định 168/2024/NĐ-CP",
+    },
+    "WRONG_WAY": {
+        "min": 4_000_000,
+        "max": 6_000_000,
+        "legal_basis": "Điểm a khoản 7 Điều 7 Nghị định 168/2024/NĐ-CP",
+    },
+    "WHEELIE": {
+        "min": 6_000_000,
+        "max": 8_000_000,
+        "legal_basis": "Khoản 8 Điều 7 Nghị định 168/2024/NĐ-CP",
+    },
+    "ZIGZAG": {
+        "min": 8_000_000,
+        "max": 10_000_000,
+        "legal_basis": "Điểm a khoản 9 Điều 7 Nghị định 168/2024/NĐ-CP",
+    },
+}
+
+
+def get_fine_for_violation(v_type: str) -> dict:
+    """Trả về thông tin mức phạt cho 1 loại vi phạm."""
+    return VIOLATION_FINE_MAP.get(v_type, {
+        "min": 0,
+        "max": 0,
+        "legal_basis": "Chưa có quy định",
+    })
+
+
+def format_vnd(amount: int) -> str:
+    """Format số tiền VN: 4000000 → '4.000.000đ'."""
+    if amount <= 0:
+        return "0đ"
+    return f"{amount:,}".replace(",", ".") + "đ"
+
+
+def format_fine_text(v_type: str) -> str:
+    """Format chuỗi mức phạt để log/FE: '400.000đ - 600.000đ'."""
+    fine = get_fine_for_violation(v_type)
+    if fine["max"] == 0:
+        return "Chưa xác định"
+    if fine["min"] == fine["max"]:
+        return format_vnd(fine["min"])
+    return f"{format_vnd(fine['min'])} - {format_vnd(fine['max'])}"
+
+
+def format_fine_short(v_type: str) -> str:
+    """Format ngắn gọn cho log: '400K - 600K'."""
+    fine = get_fine_for_violation(v_type)
+    if fine["max"] == 0:
+        return "N/A"
+    min_k = fine["min"] // 1000
+    max_k = fine["max"] // 1000
+    if min_k == max_k:
+        return f"{min_k}K"
+    return f"{min_k}K - {max_k}K"
+
 
 # ================== HELPER FUNCTIONS ==================
 
@@ -441,7 +529,8 @@ def count_persons_on_bike(person_boxes, bike_box):
 def retroactive_update_violation(bike_id, new_plate, lp_crop, frame, bike_box,
                                  bike_recorded_violations,
                                  recorded_plate_violations,
-                                 OUTPUT_DIR):
+                                 OUTPUT_DIR,
+                                 video_filename=None):
     """
     Cập nhật vi phạm cũ (đã ghi 'CHUA_RO_BS') khi OCR đọc được biển số.
     """
@@ -504,12 +593,20 @@ def retroactive_update_violation(bike_id, new_plate, lp_crop, frame, bike_box,
         logger.info("=" * 65)
 
         light_val = "red" if v_type == "RED_LIGHT" else None
+        fine_info = get_fine_for_violation(v_type)
         threading.Thread(
             target=send_violation,
             args=(bike_id, new_plate, v_type, 0.95,
                   datetime.now().isoformat(), evidence_path),
-            kwargs={"light_status": light_val,
-                    "plate_image_path": lp_evidence_path},
+            kwargs={
+                "light_status": light_val,
+                "plate_image_path": lp_evidence_path,
+                "fine_min": fine_info["min"],
+                "fine_max": fine_info["max"],
+                "fine_text": format_fine_text(v_type),
+                "legal_basis": fine_info["legal_basis"],
+                "session_id": video_filename or "",
+            },
             daemon=True,
         ).start()
 
@@ -1212,6 +1309,7 @@ def run_traffic_system(video_path, video_filename=None):
                                         bike_recorded_violations=bike_recorded_violations,
                                         recorded_plate_violations=recorded_plate_violations,
                                         OUTPUT_DIR=OUTPUT_DIR,
+                                        video_filename=video_filename,
                                     )
 
             detected_lp_str = bike_plates.get(bike_id, "")
@@ -1450,6 +1548,8 @@ def run_traffic_system(video_path, video_filename=None):
                 logger.info(f"-> Biển số xe   : "
                             f"{detected_lp_str if detected_lp_str else 'CHƯA RÕ BIỂN SỐ'}")
                 logger.info(f"-> Lỗi vi phạm  : {violation_name_vn}")
+                logger.info(f"-> Mức phạt     : {format_fine_text(v_type)}")
+                logger.info(f"-> Căn cứ PL    : {get_fine_for_violation(v_type)['legal_basis']}")
                 if v_type == "OVERLOAD":
                     logger.info(f"-> Số người     : {persons_on_bike}")
                 logger.info(f"-> Thời gian    : {now_str}")
@@ -1467,12 +1567,31 @@ def run_traffic_system(video_path, video_filename=None):
                 else:
                     conf_val = 0.95
 
+                # ✅ Lấy thông tin mức phạt
+                fine_info = get_fine_for_violation(v_type)
+
+                # ✅ MỚI — Session ID từ video filename (fallback nếu None)
+                session_id_val = (
+                    video_filename 
+                    or os.path.basename(video_path) if isinstance(video_path, str) 
+                    else f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                )
+
                 threading.Thread(
                     target=send_violation,
                     args=(bike_id, detected_lp_str, v_type,
                           conf_val, now_str, evidence_path),
-                    kwargs={"light_status": light_val,
-                            "plate_image_path": lp_evidence_path},
+                    kwargs={
+                        "light_status": light_val,
+                        "plate_image_path": lp_evidence_path,
+                        # ✅ MỚI — Thông tin mức phạt
+                        "fine_min": fine_info["min"],
+                        "fine_max": fine_info["max"],
+                        "fine_text": format_fine_text(v_type),
+                        "legal_basis": fine_info["legal_basis"],
+                        # ✅ MỚI — Session ID
+                        "session_id": session_id_val,
+                    },
                     daemon=True,
                 ).start()
 

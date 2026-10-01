@@ -6,7 +6,8 @@ import {
   Settings, 
   Upload, 
   Menu, 
-  X 
+  X,
+  Receipt          // ✅ MỚI
 } from 'lucide-react';
 import { SocketContext } from '../App';
 import toast, { Toaster } from 'react-hot-toast';
@@ -33,11 +34,14 @@ const MainLayout = () => {
           ? 'Chở quá số người'
           : 'Không đội mũ bảo hiểm';
       
+      // ✅ MỚI — Hiển thị cả mức phạt nếu có
+      const fineText = data.fine_text ? ` — ${data.fine_text}` : '';
+      
       toast.error(
         <div>
           <strong className="text-red-600">🚨 Phát hiện vi phạm mới!</strong>
           <p className="text-sm mt-1">Biển số: <span className="font-bold">{data.license_plate}</span></p>
-          <p className="text-sm">Lỗi: <span className="font-semibold">{violationName}</span></p>
+          <p className="text-sm">Lỗi: <span className="font-semibold">{violationName}{fineText}</span></p>
         </div>,
         { 
           duration: 4000,
@@ -99,6 +103,12 @@ const MainLayout = () => {
           <NavLink to="/violations" className={navLinkClass}>
             <AlertTriangle size={20} />
             <span>Lịch sử vi phạm</span>
+          </NavLink>
+
+          {/* ✅ MỚI — Quản lý phạt */}
+          <NavLink to="/penalty" className={navLinkClass}>
+            <Receipt size={20} />
+            <span>Quản lý phạt</span>
           </NavLink>
 
           <NavLink to="/upload" className={navLinkClass}>

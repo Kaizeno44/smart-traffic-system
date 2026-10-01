@@ -43,8 +43,9 @@ async function handleMessage(channel, msg) {
   const data = JSON.parse(msg.content.toString());
   const action = data.action || 'INSERT';
 
+  // ✅ MỚI — Log thêm mức phạt để dễ debug
   console.log(
-    `\n[x] Xử lý vi phạm | action=${action} | biển='${data.license_plate}'`
+    `\n[x] Xử lý vi phạm | action=${action} | biển='${data.license_plate}' | phạt=${data.fine_text || 'N/A'}`
   );
 
   const client = await pool.connect();
@@ -95,11 +96,29 @@ async function handleMessage(channel, msg) {
       if (data.light_status) extraInfo.light_status = data.light_status;
       if (data.confidence) extraInfo.confidence = data.confidence;
 
-      await client.query(
+      // ✅ MỚI — Thêm 4 field mức phạt với COALESCE (giữ giá trị cũ nếu AI gửi null)
+            await client.query(
         `UPDATE Violations
-         SET vehicle_id = $1, violation_type = $2, extra_info = $3
+         SET vehicle_id = $1,
+             violation_type = $2,
+             extra_info = $3,
+             fine_min = COALESCE($5, fine_min),
+             fine_max = COALESCE($6, fine_max),
+             fine_text = COALESCE($7, fine_text),
+             legal_basis = COALESCE($8, legal_basis),
+             session_id = COALESCE($9, session_id)
          WHERE id = $4`,
-        [finalVehicleId, data.violation_type, extraInfo, violationId]
+        [
+          finalVehicleId,
+          data.violation_type,
+          extraInfo,
+          violationId,
+          data.fine_min != null ? parseInt(data.fine_min) : null,
+          data.fine_max != null ? parseInt(data.fine_max) : null,
+          data.fine_text || null,
+          data.legal_basis || null,
+          data.session_id || null,
+        ]
       );
 
       if (data.panorama_image_path || data.license_plate_image_path) {
@@ -181,14 +200,24 @@ async function handleMessage(channel, msg) {
       if (data.light_status) extraInfo.light_status = data.light_status;
       if (data.confidence) extraInfo.confidence = data.confidence;
 
+      // ✅ MỚI — Thêm 4 field mức phạt vào INSERT Violations
       const insertViolationQuery = `
-        INSERT INTO Violations (vehicle_id, violation_type, extra_info)
-        VALUES ($1, $2, $3) RETURNING id;
+        INSERT INTO Violations 
+          (vehicle_id, violation_type, extra_info,
+           fine_min, fine_max, fine_text, legal_basis,
+           session_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+        RETURNING id;
       `;
       const violationRes = await client.query(insertViolationQuery, [
         vehicleId,
         data.violation_type,
         extraInfo,
+        parseInt(data.fine_min) || 0,
+        parseInt(data.fine_max) || 0,
+        data.fine_text || '',
+        data.legal_basis || '',
+        data.session_id || null,
       ]);
       violationId = violationRes.rows[0].id;
 
@@ -205,7 +234,7 @@ async function handleMessage(channel, msg) {
       ]);
 
       eventName = 'new_violation';
-      console.log(`  [Insert] Đã tạo violation id=${violationId}`);
+      console.log(`  [Insert] Đã tạo violation id=${violationId} (phạt: ${data.fine_text || 'N/A'})`);
     }
 
     await client.query('COMMIT');

@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+
 const { publishViolation } = require('../services/rabbitmqService');
 
 const pool = new Pool({
@@ -7,7 +8,6 @@ const pool = new Pool({
 
 // Cửa sổ dedup — cùng loại vi phạm trong khoảng này = 1 bản ghi
 const DEDUP_WINDOW_SECONDS = 60;
-
 
 /**
  * Controller nhận POST từ AI.
@@ -21,11 +21,19 @@ const DEDUP_WINDOW_SECONDS = 60;
 const createViolation = async (req, res) => {
   const {
     license_plate,
-    vehicle_id,           // track_id từ AI (nếu gửi)
+    vehicle_id,
     vehicle_type,
     violation_type,
     light_status,
     confidence,
+
+    // ✅ Thông tin mức phạt (từ Nghị định 168/2024/NĐ-CP)
+    fine_min,
+    fine_max,
+    fine_text,
+    legal_basis,
+    session_id,
+
   } = req.body;
 
   const panorama_image_path = req.files && req.files['panorama_image']
@@ -50,7 +58,6 @@ const createViolation = async (req, res) => {
       && license_plate !== 'CHUA_RO_BS';
 
     if (hasRealPlate) {
-      // Tìm vi phạm gần đây cùng loại, có biển rỗng hoặc cùng biển
       const dedupQuery = `
         SELECT v.id, veh.license_plate AS existing_plate
         FROM Violations v
@@ -72,6 +79,7 @@ const createViolation = async (req, res) => {
       if (dup.rows.length > 0) {
         action = 'UPDATE';
         existingViolationId = dup.rows[0].id;
+
         console.log(
           `[Dedup] Tìm thấy vi phạm ID=${existingViolationId} ` +
           `(biển cũ='${dup.rows[0].existing_plate}') → action=UPDATE`
@@ -93,11 +101,26 @@ const createViolation = async (req, res) => {
       license_plate_image_path,
       video_path,
       timestamp: new Date().toISOString(),
+
+      // ✅ Mức phạt
+      fine_min: parseInt(fine_min) || 0,
+      fine_max: parseInt(fine_max) || 0,
+      fine_text: fine_text || "",
+      legal_basis: legal_basis || "",
+      session_id: session_id || null,
     };
+
+    if (violationData.fine_text) {
+      console.log(
+        `[Fine] Loại=${violation_type} → ${violationData.fine_text} ` +
+        `(${violationData.legal_basis})`
+      );
+    }
 
     await publishViolation(violationData);
 
     const httpStatus = action === 'UPDATE' ? 200 : 202;
+
     res.status(httpStatus).json({
       success: true,
       action,
@@ -110,10 +133,12 @@ const createViolation = async (req, res) => {
 
   } catch (error) {
     console.error('Lỗi khi xử lý dữ liệu:', error);
-    res.status(500).json({ success: false, message: 'Lỗi server' });
+    res.status(500).json({
+      success: false,
+      message: 'Lỗi server'
+    });
   }
 };
-
 
 const getViolations = async (req, res) => {
   try {
@@ -128,24 +153,35 @@ const getViolations = async (req, res) => {
         v.extra_info, 
         e.panorama_image_path, 
         e.license_plate_image_path,
-        e.video_path
+        e.video_path,
+
+        v.fine_min,
+        v.fine_max,
+        v.fine_text,
+        v.legal_basis,
+        v.session_id
+
       FROM Violations v
       JOIN Vehicles veh ON v.vehicle_id = veh.id
       LEFT JOIN Evidences e ON v.id = e.violation_id
       ORDER BY v.violation_time DESC;
     `;
+
     const result = await pool.query(query);
 
     res.status(200).json({
       success: true,
       data: result.rows
     });
+
   } catch (error) {
     console.error('Lỗi khi lấy danh sách vi phạm:', error);
-    res.status(500).json({ success: false, message: 'Lỗi server khi lấy dữ liệu' });
+    res.status(500).json({
+      success: false,
+      message: 'Lỗi server khi lấy dữ liệu'
+    });
   }
 };
-
 
 const updateStatus = async (req, res) => {
   const { id } = req.params;
@@ -158,7 +194,10 @@ const updateStatus = async (req, res) => {
     );
 
     if (updateRes.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy vi phạm' });
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy vi phạm'
+      });
     }
 
     res.status(200).json({
@@ -166,24 +205,36 @@ const updateStatus = async (req, res) => {
       message: 'Cập nhật trạng thái thành công',
       data: updateRes.rows[0]
     });
+
   } catch (error) {
     console.error('Lỗi khi cập nhật trạng thái:', error);
-    res.status(500).json({ success: false, message: 'Lỗi server khi cập nhật' });
+    res.status(500).json({
+      success: false,
+      message: 'Lỗi server khi cập nhật'
+    });
   }
 };
 
-
 const updateViolationVideo = async (req, res) => {
-  const { vehicle_id } = req.body;   // bike_id từ AI
+  const { vehicle_id } = req.body;
+
   if (!vehicle_id) {
-    return res.status(400).json({ success: false, message: 'Thiếu vehicle_id' });
+    return res.status(400).json({
+      success: false,
+      message: 'Thiếu vehicle_id'
+    });
   }
+
   if (!req.files || !req.files['violation_video']) {
-    return res.status(400).json({ success: false, message: 'Thiếu video' });
+    return res.status(400).json({
+      success: false,
+      message: 'Thiếu video'
+    });
   }
+
   const video_path = '/uploads/' + req.files['violation_video'][0].filename;
+
   try {
-    // Tìm vi phạm gần nhất của xe này trong 60s qua
     const findQuery = `
       SELECT v.id
       FROM Violations v
@@ -196,7 +247,7 @@ const updateViolationVideo = async (req, res) => {
       ORDER BY v.id DESC
       LIMIT 1
     `;
-    // Đơn giản hơn: cập nhật vi phạm mới nhất CHƯA có video
+
     const updRes = await pool.query(`
       UPDATE Evidences
       SET video_path = $1
@@ -209,28 +260,255 @@ const updateViolationVideo = async (req, res) => {
       )
       RETURNING id, violation_id
     `, [video_path]);
+
     if (updRes.rows.length === 0) {
       return res.status(404).json({ 
         success: false, 
         message: 'Không tìm thấy vi phạm cần update video' 
       });
     }
-    console.log(`[UpdateVideo] Đã gắn video ${video_path} vào evidence id=${updRes.rows[0].id}`);
-    // Notify frontend
+
+    console.log(
+      `[UpdateVideo] Đã gắn video ${video_path} vào evidence id=${updRes.rows[0].id}`
+    );
+
     const io = req.app.get('io');
+
     if (io) {
       io.emit('violation_video_ready', {
         violation_id: updRes.rows[0].violation_id,
         video_path: video_path,
       });
     }
+
     res.status(200).json({
       success: true,
       message: 'Cập nhật video thành công',
       data: updRes.rows[0],
     });
+
   } catch (error) {
     console.error('Lỗi update video:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Lỗi server'
+    });
+  }
+};
+
+// ✅ Lấy tổng hợp theo session (video)
+const getSessionSummary = async (req, res) => {
+  const { session_id } = req.params;
+  try {
+    const query = `
+      SELECT 
+        v.session_id,
+        COUNT(*) AS violation_count,
+        SUM(v.fine_min) AS total_fine_min,
+        SUM(v.fine_max) AS total_fine_max,
+        MIN(v.violation_time) AS first_violation_time,
+        MAX(v.violation_time) AS last_violation_time,
+        array_agg(DISTINCT v.violation_type) AS violation_types,
+        array_agg(DISTINCT veh.license_plate) FILTER (WHERE veh.license_plate IS NOT NULL AND veh.license_plate != '') AS license_plates
+      FROM Violations v
+      JOIN Vehicles veh ON v.vehicle_id = veh.id
+      WHERE v.session_id = $1
+      GROUP BY v.session_id;
+    `;
+    const result = await pool.query(query, [session_id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Không tìm thấy session' 
+      });
+    }
+
+    const row = result.rows[0];
+    const fmt = (n) => parseInt(n).toLocaleString('vi-VN') + 'đ';
+
+    res.status(200).json({
+      success: true,
+      data: {
+        session_id: row.session_id,
+        violation_count: parseInt(row.violation_count),
+        total_fine_min: parseInt(row.total_fine_min),
+        total_fine_max: parseInt(row.total_fine_max),
+        total_fine_text: `${fmt(row.total_fine_min)} - ${fmt(row.total_fine_max)}`,
+        first_violation_time: row.first_violation_time,
+        last_violation_time: row.last_violation_time,
+        violation_types: row.violation_types,
+        license_plates: row.license_plates || [],
+      }
+    });
+  } catch (error) {
+    console.error('Lỗi lấy session summary:', error);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+};
+
+// ✅ Lấy danh sách tất cả sessions
+const getAllSessions = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        v.session_id,
+        COUNT(*) AS violation_count,
+        SUM(v.fine_min) AS total_fine_min,
+        SUM(v.fine_max) AS total_fine_max,
+        MAX(v.violation_time) AS last_violation_time,
+        array_agg(DISTINCT v.violation_type) AS violation_types,
+        array_agg(DISTINCT veh.license_plate) FILTER (
+          WHERE veh.license_plate IS NOT NULL AND veh.license_plate != ''
+        ) AS license_plates
+      FROM Violations v
+      JOIN Vehicles veh ON v.vehicle_id = veh.id
+      WHERE v.session_id IS NOT NULL AND v.session_id != ''
+      GROUP BY v.session_id
+      ORDER BY MAX(v.violation_time) DESC;
+    `;
+    const result = await pool.query(query);
+
+    const fmt = (n) => parseInt(n).toLocaleString('vi-VN') + 'đ';
+
+    res.status(200).json({
+      success: true,
+      data: result.rows.map(r => ({
+        session_id: r.session_id,
+        violation_count: parseInt(r.violation_count),
+        total_fine_min: parseInt(r.total_fine_min),
+        total_fine_max: parseInt(r.total_fine_max),
+        total_fine_text: `${fmt(r.total_fine_min)} - ${fmt(r.total_fine_max)}`,
+        last_violation_time: r.last_violation_time,
+        violation_types: r.violation_types || [],
+        license_plates: r.license_plates || [],
+      }))
+    });
+  } catch (error) {
+    console.error('Lỗi lấy sessions:', error);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+};
+
+
+// ✅ MỚI — Thống kê tổng quan (cho trang Quản lý phạt)
+const getPenaltyOverview = async (req, res) => {
+  try {
+    // 1. Tổng quan
+    const overview = await pool.query(`
+      SELECT 
+        COUNT(*) AS total_violations,
+        COALESCE(SUM(v.fine_min), 0) AS total_fine_min,
+        COALESCE(SUM(v.fine_max), 0) AS total_fine_max,
+        COUNT(*) FILTER (WHERE v.status = 'Pending') AS pending_count,
+        COUNT(*) FILTER (WHERE v.status = 'Confirmed') AS confirmed_count,
+        COUNT(DISTINCT veh.license_plate) FILTER (
+          WHERE veh.license_plate IS NOT NULL AND veh.license_plate != ''
+        ) AS unique_vehicles
+      FROM Violations v
+      JOIN Vehicles veh ON v.vehicle_id = veh.id
+    `);
+
+    // 2. Thống kê theo loại vi phạm
+    const byType = await pool.query(`
+      SELECT 
+        v.violation_type,
+        COUNT(*) AS count,
+        COALESCE(SUM(v.fine_min), 0) AS total_min,
+        COALESCE(SUM(v.fine_max), 0) AS total_max
+      FROM Violations v
+      GROUP BY v.violation_type
+      ORDER BY count DESC
+    `);
+
+    // 3. Thống kê theo ngày (7 ngày gần nhất)
+    const byDay = await pool.query(`
+      SELECT 
+        DATE(v.violation_time) AS day,
+        COUNT(*) AS count,
+        COALESCE(SUM(v.fine_min), 0) AS total_min,
+        COALESCE(SUM(v.fine_max), 0) AS total_max
+      FROM Violations v
+      WHERE v.violation_time > NOW() - INTERVAL '7 days'
+      GROUP BY DATE(v.violation_time)
+      ORDER BY day ASC
+    `);
+
+    const fmt = (n) => parseInt(n).toLocaleString('vi-VN') + 'đ';
+    const o = overview.rows[0];
+
+    res.status(200).json({
+      success: true,
+      data: {
+        overview: {
+          total_violations: parseInt(o.total_violations),
+          total_fine_min: parseInt(o.total_fine_min),
+          total_fine_max: parseInt(o.total_fine_max),
+          total_fine_text: `${fmt(o.total_fine_min)} - ${fmt(o.total_fine_max)}`,
+          pending_count: parseInt(o.pending_count),
+          confirmed_count: parseInt(o.confirmed_count),
+          unique_vehicles: parseInt(o.unique_vehicles),
+        },
+        by_type: byType.rows.map(r => ({
+          violation_type: r.violation_type,
+          count: parseInt(r.count),
+          total_min: parseInt(r.total_min),
+          total_max: parseInt(r.total_max),
+          total_text: `${fmt(r.total_min)} - ${fmt(r.total_max)}`,
+        })),
+        by_day: byDay.rows.map(r => ({
+          day: r.day,
+          count: parseInt(r.count),
+          total_min: parseInt(r.total_min),
+          total_max: parseInt(r.total_max),
+        })),
+      }
+    });
+  } catch (error) {
+    console.error('Lỗi lấy penalty overview:', error);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+};
+
+// ✅ MỚI — Top xe vi phạm nhiều
+const getTopViolators = async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+
+    const result = await pool.query(`
+      SELECT 
+        veh.license_plate,
+        veh.vehicle_type,
+        COUNT(*) AS violation_count,
+        COALESCE(SUM(v.fine_min), 0) AS total_min,
+        COALESCE(SUM(v.fine_max), 0) AS total_max,
+        array_agg(DISTINCT v.violation_type) AS violation_types,
+        MAX(v.violation_time) AS last_violation_time
+      FROM Violations v
+      JOIN Vehicles veh ON v.vehicle_id = veh.id
+      WHERE veh.license_plate IS NOT NULL AND veh.license_plate != ''
+      GROUP BY veh.license_plate, veh.vehicle_type
+      ORDER BY violation_count DESC, total_max DESC
+      LIMIT $1
+    `, [limit]);
+
+    const fmt = (n) => parseInt(n).toLocaleString('vi-VN') + 'đ';
+
+    res.status(200).json({
+      success: true,
+      data: result.rows.map(r => ({
+        license_plate: r.license_plate,
+        vehicle_type: r.vehicle_type,
+        violation_count: parseInt(r.violation_count),
+        total_min: parseInt(r.total_min),
+        total_max: parseInt(r.total_max),
+        total_text: `${fmt(r.total_min)} - ${fmt(r.total_max)}`,
+        violation_types: r.violation_types || [],
+        last_violation_time: r.last_violation_time,
+      }))
+    });
+  } catch (error) {
+    console.error('Lỗi lấy top violators:', error);
     res.status(500).json({ success: false, message: 'Lỗi server' });
   }
 };
@@ -240,5 +518,9 @@ module.exports = {
   createViolation,
   getViolations,
   updateStatus,
-  updateViolationVideo,   // ← THÊM
+  updateViolationVideo,
+  getSessionSummary,
+  getAllSessions,
+  getPenaltyOverview,   // ✅ MỚI
+  getTopViolators,      // ✅ MỚI
 };

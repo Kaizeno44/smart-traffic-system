@@ -4,7 +4,11 @@ const {
   createViolation, 
   getViolations, 
   updateStatus,
-  updateViolationVideo 
+  updateViolationVideo,
+  getSessionSummary,   
+  getAllSessions,
+  getPenaltyOverview,   // ✅ MỚI
+  getTopViolators,      // ✅ MỚI
 } = require('../controllers/violationController');
 const upload = require('../middlewares/upload');
 
@@ -18,6 +22,14 @@ router.post('/', imageUpload, createViolation);
 router.get('/', getViolations);
 router.put('/:id/status', updateStatus);
 router.post('/update-video', imageUpload, updateViolationVideo);
+
+// Session endpoints
+router.get('/sessions', getAllSessions);
+router.get('/sessions/:session_id', getSessionSummary);
+
+// ✅ MỚI — Stats endpoints (cho trang Quản lý phạt)
+router.get('/stats/overview', getPenaltyOverview);
+router.get('/stats/top-violators', getTopViolators);
 
 // Webhook: Worker gọi sau khi lưu DB → Socket.io bắn cho Frontend
 router.post('/notify-realtime', (req, res) => {

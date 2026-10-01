@@ -20,6 +20,12 @@ const formatViolationError = (error) => {
     'no_helmet': 'Không đội mũ bảo hiểm',
     'red_light': 'Vượt đèn đỏ',
     'overload': 'Chở quá số người',
+    // ✅ MỚI — Chuẩn bị cho các vi phạm tương lai
+    'phone_use': 'Dùng điện thoại',
+    'wrong_lane': 'Đi sai làn',
+    'wrong_way': 'Đi ngược chiều',
+    'wheelie': 'Bốc đầu',
+    'zigzag': 'Lạng lách',
   };
   return map[error?.toLowerCase()] || error;
 };
@@ -46,6 +52,22 @@ const formatTime = (timeString) => {
   }
 };
 
+// ✅ MỚI — Format mức phạt
+const formatFine = (row) => {
+  // Ưu tiên dùng fine_text có sẵn từ BE
+  if (row.fine_text && row.fine_text.trim() !== '') {
+    return row.fine_text;
+  }
+  // Fallback: format từ fine_min / fine_max
+  const min = parseInt(row.fine_min) || 0;
+  const max = parseInt(row.fine_max) || 0;
+  if (min === 0 && max === 0) return null;
+  
+  const fmt = (n) => n.toLocaleString('vi-VN') + 'đ';
+  if (min === max) return fmt(min);
+  return `${fmt(min)} - ${fmt(max)}`;
+};
+
 
 // ============ SORT ICON ============
 const SortIcon = ({ column, sortBy, sortOrder }) => {
@@ -64,9 +86,9 @@ const ViolationTable = ({
   onConfirm,
   processingId,
   onViewDetail,
-  onSort,           // MỚI
-  sortBy,           // MỚI
-  sortOrder,        // MỚI
+  onSort,
+  sortBy,
+  sortOrder,
 }) => {
   const BASE_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:3000';
 
@@ -96,7 +118,6 @@ const ViolationTable = ({
   return (
     <div className="bg-white rounded-lg shadow w-full overflow-hidden border border-gray-100">
       <div className="overflow-x-auto w-full">
-        {/* min-w-max giúp bảng giữ nguyên kích thước nội dung, sinh ra thanh cuộn ngang mượt mà */}
         <table className="min-w-max w-full divide-y divide-gray-200 text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -104,6 +125,8 @@ const ViolationTable = ({
               <SortableHeader column="license_plate" label="Biển số" />
               <SortableHeader column="vehicle_type" label="Loại xe" />
               <SortableHeader column="violation_type" label="Lỗi vi phạm" />
+              {/* ✅ MỚI — Cột mức phạt */}
+              <SortableHeader column="fine_min" label="Mức phạt" />
               <SortableHeader column="violation_time" label="Thời gian" />
               <SortableHeader column="status" label="Trạng thái" />
               <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase">
@@ -115,86 +138,110 @@ const ViolationTable = ({
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {data.map((row) => (
-              <tr key={row.id} className="hover:bg-gray-50 transition">
-                <td className="px-4 py-4 text-gray-900 font-medium">{row.id}</td>
+            {data.map((row) => {
+              const fineText = formatFine(row);
+              return (
+                <tr key={row.id} className="hover:bg-gray-50 transition">
+                  <td className="px-4 py-4 text-gray-900 font-medium">{row.id}</td>
 
-                <td className="px-4 py-4 font-bold text-red-600 whitespace-nowrap">
-                  {row.license_plate || <span className="text-gray-400 italic">Chưa rõ</span>}
-                </td>
+                  <td className="px-4 py-4 font-bold text-red-600 whitespace-nowrap">
+                    {row.license_plate || <span className="text-gray-400 italic">Chưa rõ</span>}
+                  </td>
 
-                <td className="px-4 py-4 text-gray-600 whitespace-nowrap">
-                  {formatVehicleType(row.vehicle_type)}
-                </td>
+                  <td className="px-4 py-4 text-gray-600 whitespace-nowrap">
+                    {formatVehicleType(row.vehicle_type)}
+                  </td>
 
-                <td className="px-4 py-4">
-                  <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap">
-                    {formatViolationError(row.violation_type)}
-                  </span>
-                </td>
+                  <td className="px-4 py-4">
+                    <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap">
+                      {formatViolationError(row.violation_type)}
+                    </span>
+                  </td>
 
-                <td className="px-4 py-4 text-gray-500 whitespace-nowrap">
-                  {formatTime(row.violation_time)}
-                </td>
-
-                <td className="px-4 py-4">
-                  <span
-                    className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${
-                      row.status === 'Confirmed'
-                        ? 'bg-green-100 text-green-700'
-                        : 'bg-yellow-100 text-yellow-700'
-                    }`}
-                  >
-                    {formatStatus(row.status)}
-                  </span>
-                </td>
-
-                <td className="px-4 py-2">
-                  <div className="flex justify-center">
-                    {row.video_path ? (
-                      <video
-                        src={getImageUrl(row.video_path)}
-                        controls
-                        preload="metadata"
-                        className="h-20 w-32 object-cover rounded border bg-black shrink-0"
-                      />
+                  {/* ✅ MỚI — Cell mức phạt */}
+                  <td className="px-4 py-4 whitespace-nowrap">
+                    {fineText ? (
+                      <div className="flex flex-col">
+                        <span className="text-red-700 font-bold text-sm">
+                          {fineText}
+                        </span>
+                        {row.legal_basis && (
+                          <span
+                            className="text-gray-400 text-[10px] mt-0.5 truncate max-w-[180px]"
+                            title={row.legal_basis}
+                          >
+                            {row.legal_basis}
+                          </span>
+                        )}
+                      </div>
                     ) : (
-                      <img
-                        src={getImageUrl(row.panorama_image_path)}
-                        alt="Bằng chứng"
-                        className="h-16 w-24 object-cover rounded border shrink-0"
-                        onError={handleImageError}
-                      />
+                      <span className="text-gray-400 italic text-xs">Chưa xác định</span>
                     )}
-                  </div>
-                </td>
+                  </td>
 
-                <td className="px-4 py-4">
-                  <div className="flex justify-center gap-2">
-                    <button
-                      onClick={() => onViewDetail && onViewDetail(row)}
-                      className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded text-sm font-medium transition whitespace-nowrap"
+                  <td className="px-4 py-4 text-gray-500 whitespace-nowrap">
+                    {formatTime(row.violation_time)}
+                  </td>
+
+                  <td className="px-4 py-4">
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${
+                        row.status === 'Confirmed'
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-yellow-100 text-yellow-700'
+                      }`}
                     >
-                      Chi tiết
-                    </button>
+                      {formatStatus(row.status)}
+                    </span>
+                  </td>
 
-                    {row.status === 'Pending' && (
+                  <td className="px-4 py-2">
+                    <div className="flex justify-center">
+                      {row.video_path ? (
+                        <video
+                          src={getImageUrl(row.video_path)}
+                          controls
+                          preload="metadata"
+                          className="h-20 w-32 object-cover rounded border bg-black shrink-0"
+                        />
+                      ) : (
+                        <img
+                          src={getImageUrl(row.panorama_image_path)}
+                          alt="Bằng chứng"
+                          className="h-16 w-24 object-cover rounded border shrink-0"
+                          onError={handleImageError}
+                        />
+                      )}
+                    </div>
+                  </td>
+
+                  <td className="px-4 py-4">
+                    <div className="flex justify-center gap-2">
                       <button
-                        onClick={() => onConfirm(row.id)}
-                        disabled={processingId === row.id}
-                        className={`px-3 py-1.5 rounded text-sm font-medium transition text-white whitespace-nowrap ${
-                          processingId === row.id
-                            ? 'bg-gray-400 cursor-not-allowed'
-                            : 'bg-blue-600 hover:bg-blue-700'
-                        }`}
+                        onClick={() => onViewDetail && onViewDetail(row)}
+                        className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded text-sm font-medium transition whitespace-nowrap"
                       >
-                        {processingId === row.id ? 'Đang xử lý...' : 'Xác nhận'}
+                        Chi tiết
                       </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+
+                      {row.status === 'Pending' && (
+                        <button
+                          onClick={() => onConfirm(row.id)}
+                          disabled={processingId === row.id}
+                          className={`px-3 py-1.5 rounded text-sm font-medium transition text-white whitespace-nowrap ${
+                            processingId === row.id
+                              ? 'bg-gray-400 cursor-not-allowed'
+                              : 'bg-blue-600 hover:bg-blue-700'
+                          }`}
+                        >
+                          {processingId === row.id ? 'Đang xử lý...' : 'Xác nhận'}
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
 
