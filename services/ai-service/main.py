@@ -67,7 +67,7 @@ LP_CONF_THRESHOLD = 0.50
 HELMET_CONF_THRESHOLD = 0.35
 NO_HELMET_CONF_THRESHOLD = 0.45
 TL_CONF_THRESHOLD = 0.3
-MOTO_TRACK_CONF = 0.05
+MOTO_TRACK_CONF = 0.85
 
 # Filter hình dạng biển số
 LP_MIN_AREA = 800
@@ -679,7 +679,7 @@ def run_traffic_system(video_path, video_filename=None):
 
     # --- Nạp model ---
     try:
-        moto_model = YOLO("yolov8n.pt").to(device)
+        moto_model = YOLO(os.path.join(MODELS_DIR, "bike.pt")).to(device)
         helmet_model = YOLO(os.path.join(MODELS_DIR, "helmet_lp_best.pt")).to(device)
         lp_model = YOLO(os.path.join(MODELS_DIR, "my_lp_model.pt")).to(device)
         tl_model = YOLO("yolov8n.pt").to(device)
@@ -1596,7 +1596,7 @@ def run_traffic_system(video_path, video_filename=None):
                 ).start()
 
             # ========================================================
-            # BỔ SUNG: HIỂN THỊ CỬA SỔ THEO DÕI AI TRÊN MÁY TÍNH
+            # # BỔ SUNG: HIỂN THỊ CỬA SỔ THEO DÕI AI TRÊN MÁY TÍNH
             # cv2.namedWindow("Smart Traffic Monitoring", cv2.WINDOW_NORMAL)
             
             # # Cố định chiều cao cửa sổ cho dễ nhìn (vd: 720p)

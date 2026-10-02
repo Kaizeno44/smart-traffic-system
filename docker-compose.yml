@@ -9,7 +9,9 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./infrastructure/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./infrastructure/init.sql:/docker-entrypoint-initdb.d/001_init.sql
+      - ./services/backend-api/migrations/002_add_fine_columns.sql:/docker-entrypoint-initdb.d/002_add_fine_columns.sql
+      - ./services/backend-api/migrations/003_add_session_id.sql:/docker-entrypoint-initdb.d/003_add_session_id.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d smart_traffic"]
       interval: 5s
