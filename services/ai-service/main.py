@@ -922,6 +922,18 @@ def run_traffic_system(video_path, video_filename=None):
                 det["_source"] = "lp_model"
                 lp_dets.append(det)
 
+        # THÊM ĐOẠN NÀY ĐỂ VẼ KHUNG BIỂN SỐ VÀ CONF LÊN VIDEO AI
+        for lp in lp_dets:
+            lx1, ly1, lx2, ly2 = map(int, lp["bbox"])
+            lp_conf = float(lp["conf"])
+            
+            # Vẽ khung bao quanh biển số (dùng màu Tím/Magenta để dễ phân biệt với khung xe)
+            cv2.rectangle(annotated_frame, (lx1, ly1), (lx2, ly2), (255, 0, 255), 2)
+            
+            # Ghi chữ conf ngay phía trên khung biển số
+            cv2.putText(annotated_frame, f"LP: {lp_conf:.2f}", (lx1, max(15, ly1 - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2)
+
         # ============ LỌC NO-HELMET ============
         for nh in raw_no_helmet_dets:
             x1, y1, x2, y2 = nh["bbox"]
@@ -1596,7 +1608,7 @@ def run_traffic_system(video_path, video_filename=None):
                 ).start()
 
             # ========================================================
-            # # BỔ SUNG: HIỂN THỊ CỬA SỔ THEO DÕI AI TRÊN MÁY TÍNH
+            # BỔ SUNG: HIỂN THỊ CỬA SỔ THEO DÕI AI TRÊN MÁY TÍNH
             # cv2.namedWindow("Smart Traffic Monitoring", cv2.WINDOW_NORMAL)
             
             # # Cố định chiều cao cửa sổ cho dễ nhìn (vd: 720p)
