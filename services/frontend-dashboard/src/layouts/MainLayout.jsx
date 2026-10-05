@@ -115,11 +115,6 @@ const MainLayout = () => {
             <Upload size={20} />
             <span>Upload Video</span>
           </NavLink>
-
-          <NavLink to="/settings" className={navLinkClass}>
-            <Settings size={20} />
-            <span>Cài đặt</span>
-          </NavLink>
         </nav>
       </aside>
 
@@ -127,26 +122,22 @@ const MainLayout = () => {
       <div className="flex-1 flex flex-col h-screen overflow-hidden">
         
         {/* HEADER */}
-        <header className="bg-white shadow-sm h-16 shrink-0 flex items-center justify-between px-4 lg:px-6 z-10">
+        <header className="bg-gray-800 shadow-sm h-16 shrink-0 flex items-center justify-between px-4 lg:px-6 z-10">
           <div className="flex items-center gap-3">
             {/* Nút mở Menu Hamburger (Chỉ hiện trên Mobile) */}
             <button 
-              className="p-2 -ml-2 rounded-md hover:bg-gray-100 lg:hidden text-gray-600"
+              className="p-2 -ml-2 rounded-md hover:bg-gray-700 lg:hidden text-gray-300"
               onClick={() => setIsSidebarOpen(true)}
             >
               <Menu size={24} />
             </button>
             
-            <h1 className="text-lg lg:text-xl font-semibold text-gray-800 truncate max-w-[200px] sm:max-w-md md:max-w-full">
+            {/* Đổi text-gray-800 thành text-white để chữ nổi bật trên nền tối */}
+            <h1 className="text-lg lg:text-xl font-semibold text-white truncate max-w-[200px] sm:max-w-md md:max-w-full">
               Hệ thống giám sát giao thông
             </h1>
           </div>
 
-          <div className="flex items-center gap-4 shrink-0">
-            <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white font-bold shadow-sm">
-              A
-            </div>
-          </div>
         </header>
 
         {/* PAGE CONTENT */}
