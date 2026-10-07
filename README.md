@@ -19,15 +19,15 @@ Hệ thống giám sát và xử lý giao thông thông minh sử dụng AI đ�
 
 ### Dashboard
 
-![Dashboard](docs/images/dashboard.png)
+![Dashboard](images/dashboard.png)
 
 ### Violation Management
 
-![Violation Management](docs/images/violations.png)
+![Violation Management](images/violations.png)
 
 ### Video Processing
 
-![Video Processing](docs/images/video-processing.png)
+![Video Processing](images/video-processing.png)
 
 ## Architecture
 
