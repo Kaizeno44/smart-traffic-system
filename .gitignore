@@ -20,6 +20,7 @@ venv*/
 *.mp4
 *.avi
 *.jpg
+*.png
 *.jpeg
 /services/ai-service/data/
 output_violations/
